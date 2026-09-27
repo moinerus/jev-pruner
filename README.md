@@ -150,8 +150,9 @@ without logging the output text.
 
 Codex CLI 0.152.1 does not support replacing native shell output from
 `PostToolUse`. The Codex integration is an **opt-in command wrapper and skill**,
-not automatic interception. Its `PreToolUse` hook only records a transcript
-pointer; it never rewrites commands or returns an approval decision.
+not automatic interception. Its optional `PreToolUse` hook records a transcript
+pointer for the older unmarked route; it never rewrites commands or returns an
+approval decision.
 
 ### 1. Install Codex and sign in
 
@@ -246,10 +247,11 @@ router owns upstream network access. Command approvals still apply. The
 30,000-token setting raises Codex's separate host output limit; otherwise Codex
 can truncate a result even after the wrapper has pruned it.
 
-Inside Codex, open `/hooks`, review the `jev-pruner` `PreToolUse` hook, and trust
-it. That hook records the current transcript location so Jev can score against
-the conversation. An untrusted hook leaves the wrapper without the history it
-needs, so output passes through unchanged.
+The paid `--require-campaign` route needs a short `--goal` and a durable
+campaign ledger. It does not read the Codex transcript or need the hook.
+For the older unmarked route, open `/hooks`, review the `jev-pruner`
+`PreToolUse` hook, and trust it. That hook records the transcript location;
+without it, the unmarked route passes output through unchanged.
 
 In direct mode, the API key must also reach Codex's shell commands. The wrapper
 does not change Codex's environment filtering, network policy, or approval
@@ -325,7 +327,7 @@ in the projects where the commands ran.
 | `codex: command not found`, or no `plugin` subcommand | Check that npm's global executables are on `PATH` and `codex --version` reports the tested CLI version above. |
 | The skill is unavailable | Check `codex plugin list --json`, then start a new session after installation. |
 | `dist/codex/run.js` cannot be found | Run `npm ci` and `npm run build` in the checkout, then remove and reinstall the cached plugin as above. |
-| Large output is unchanged | Confirm Codex used the wrapper, the hook is trusted, the command succeeded, and the output is eligible. In direct mode check the API key, Jev network access, and TypeSafe credits. In router mode check the local router and its OpenRouter Decisions route. Missing access or scoring failures preserve stdout. |
+| Large output is unchanged | Confirm Codex used the wrapper, the command succeeded, and the output is eligible. For `--require-campaign`, check the short goal and ledger settings. For the older unmarked route, check that the hook is trusted. In direct mode check the API key, Jev network access, and TypeSafe credits. In router mode check the local router and its OpenRouter Decisions route. Missing access or scoring failures preserve stdout. |
 | Jev returns HTTP 402 | Add TypeSafe API credits. Your Codex subscription does not fund Jev requests. |
 | Codex reports output truncation | Use the larger `tool_output_token_limit` shown above and read the original archive when available. This limit is separate from the pruning threshold. |
 
@@ -341,7 +343,7 @@ The skill runs non-interactive commands through the native Codex shell using
 the installed plugin root, not necessarily the source checkout:
 
 ```sh
-node "<installed-plugin-root>/dist/codex/run.js" -- npm test
+node "<installed-plugin-root>/dist/codex/run.js" --require-campaign --goal "Keep test failures and the final result" -- npm test
 ```
 
 The executable and arguments after `--` are passed directly, preserving cwd,
