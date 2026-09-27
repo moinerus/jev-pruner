@@ -352,7 +352,7 @@ the ordinary shell. Stdout is buffered until command completion; above 8 MiB,
 the wrapper switches to unchanged streaming to bound memory use. Nonzero exits,
 invalid UTF-8, and credential-like commands/output pass through without scoring.
 
-The strict over-10,000-token gate, categories, complete-history partitioning,
+For the older unmarked route, the strict over-10,000-token gate, categories, complete-history partitioning,
 verbatim retention, and incomplete-scoring safeguards reuse the same pruning
 engine as Claude. The host transcript pointer is stored under
 `~/.cache/jev-pruner/codex/<session-id>.json`. `CODEX_THREAD_ID` selects the
@@ -367,7 +367,7 @@ Before scoring, original stdout is archived in the command workdir's
 Stderr remains unchanged on its original stream. Successful pruning ends with
 the archive recovery footer. Archives and transcript pointers persist until
 manually removed. API requests time out after 30 seconds and failures preserve
-stdout. Jev receives the recorded conversation and tool results; secret detection
+stdout. In the unmarked route, Jev receives the recorded conversation and tool results; secret detection
 is a heuristic for the current command/output, not transcript redaction.
 
 ### Sustained Codex validation
@@ -530,10 +530,17 @@ before `--` in every wrapper command and set all four variables below for each
 wrapper process. For example:
 
 ```sh
-node "<installed-plugin-root>/dist/codex/run.js" --require-campaign -- npm test
+node "<installed-plugin-root>/dist/codex/run.js" --require-campaign --goal "Keep test failures and the final result" -- npm test
 ```
 
-With the marker, missing or invalid settings, a missing ledger, a
+With the marker, a one-line goal of at most 240 characters is required.
+The paid path does not read or send the Codex transcript, command arguments,
+or diagnostics collected outside the selected chunks. It sends the short goal
+and bounded output chunks, with at most 3,000 estimated tokens of state and
+6,000 estimated tokens in each complete request. An oversized request is
+rejected before its budget reservation and leaves the original output intact.
+Missing or invalid goals, missing or
+invalid settings, a missing ledger, a
 ledger that disagrees with its journal, and a lock left by a crashed process
 preserve original output and send no scoring request. The journal is synced
 before the ledger reservation changes; the lock permits only one active request

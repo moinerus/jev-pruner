@@ -8,6 +8,7 @@ import { exceedsOutputThreshold, trimOutput } from '../output.js';
 import { looksSecret } from '../secrets.js';
 import { readTranscript } from './context.js';
 import { codexMessages } from './history.js';
+import { CODEX_ROUTER_JEV_MODEL } from './router-asker.js';
 
 export async function pruneCodexOutput(
   output: Buffer,
@@ -15,6 +16,7 @@ export async function pruneCodexOutput(
   options: {
     cwd: string;
     sessionId?: string;
+    goal?: string;
     apiKey?: string;
     home?: string;
     asker?: JevAsker;
@@ -25,14 +27,18 @@ export async function pruneCodexOutput(
 ): Promise<Buffer> {
   const apiKey = options.apiKey;
   const text = output.toString('utf8');
+  const focusedGoal = options.goal?.trim();
   if (!output.equals(Buffer.from(text)) || !exceedsOutputThreshold(text)
-      || !options.sessionId || (!apiKey && !options.asker) || looksSecret(command, text) ||
+      || (!options.campaignRequired && !options.sessionId) ||
+      (options.campaignRequired && (!focusedGoal || focusedGoal.length > 240 ||
+        /[\r\n]/.test(focusedGoal) || looksSecret(focusedGoal, focusedGoal))) ||
+      (!apiKey && !options.asker) || looksSecret(command, text) ||
       (options.campaignRequired && !options.campaignAllowance)) return output;
   try {
-    const messages = codexMessages(
-      await readTranscript(options.sessionId, options.home), options.sessionId,
+    const messages = options.campaignRequired ? [] : codexMessages(
+      await readTranscript(options.sessionId!, options.home), options.sessionId!,
     );
-    const goal = messages.filter(message => message.role === 'user' && message.text)
+    const goal = focusedGoal ?? messages.filter(message => message.role === 'user' && message.text)
       .slice(-3).map(message => message.text.slice(0, 500)).join('\n');
     const directory = join(options.cwd, '.jev-pruner');
     const path = join(directory, `codex-${randomUUID()}.txt`);
@@ -43,7 +49,8 @@ export async function pruneCodexOutput(
       await writeFile(path, output, { mode: 0o600, flag: 'wx' });
     };
     const result = await trimOutput(
-      { command, goal, messages, output: text, fullOutputPath: path },
+      { command, goal, messages, output: text, fullOutputPath: path,
+        focused: options.campaignRequired },
       {
         async ask(state, questions) {
           if (options.signal?.aborted) throw new Error('Command interrupted');
@@ -68,7 +75,14 @@ export async function pruneCodexOutput(
           }
         },
       },
-      { campaignAllowance: options.campaignAllowance },
+      {
+        campaignAllowance: options.campaignAllowance,
+        ...(options.campaignRequired ? {
+          maxStateTokens: 3_000,
+          maxRequestTokens: 6_000,
+          requestModel: CODEX_ROUTER_JEV_MODEL,
+        } : {}),
+      },
     );
     return result.trimmed && !options.signal?.aborted
       ? Buffer.from(`${result.output}\n\n[fast-jev-output full output: ${path} (Read or grep it if needed)]`)
