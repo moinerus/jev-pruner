@@ -511,6 +511,21 @@ override it explicitly. Incomplete scoring always preserves the unscored content
 Requests take one output batch from every history segment before moving to the
 next batch, so a limited allowance can still finish scoring some chunks.
 
+Library callers preparing a bounded campaign can pass one `JevCampaignAllowance`
+instance as `campaignAllowance` to every `trimOutput` call in the process. Its
+constructor takes the maximum request count, maximum reserved microUSD and an
+enforced worst-case microUSD ceiling per request. It reserves the full amount
+before each dispatch, including retries and refinements, and permits only one
+active request across calls that share the instance. An uncertain or failed
+request keeps its reservation. A transport failure stops the allowance. When
+the allowance is exhausted, unscored output remains intact.
+
+This is an in-process control and the Codex wrapper does not enable it. A paid
+campaign across wrapper processes still needs a shared durable allowance, plus
+proof that the Router route enforces the declared per-request cost ceiling.
+Without that proof the reserved amount is only an estimate and cannot bound
+provider spend. No live campaign should rely on this class alone.
+
 A 76,379-char log went from a 2,227-char preview that did not contain the error
 line to 4,013 chars of pruned output that did.
 
