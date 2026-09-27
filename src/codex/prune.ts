@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { JevAsker } from '../jev.js';
+import type { JevScoringAllowance } from '../campaign-allowance.js';
 import { buildJevRequest, parseJevResponse } from '../jev.js';
 import { exceedsOutputThreshold, trimOutput } from '../output.js';
 import { looksSecret } from '../secrets.js';
@@ -17,13 +18,16 @@ export async function pruneCodexOutput(
     apiKey?: string;
     home?: string;
     asker?: JevAsker;
+    campaignRequired?: boolean;
+    campaignAllowance?: JevScoringAllowance;
     signal?: AbortSignal;
   },
 ): Promise<Buffer> {
   const apiKey = options.apiKey;
   const text = output.toString('utf8');
   if (!output.equals(Buffer.from(text)) || !exceedsOutputThreshold(text)
-      || !options.sessionId || (!apiKey && !options.asker) || looksSecret(command, text)) return output;
+      || !options.sessionId || (!apiKey && !options.asker) || looksSecret(command, text) ||
+      (options.campaignRequired && !options.campaignAllowance)) return output;
   try {
     const messages = codexMessages(
       await readTranscript(options.sessionId, options.home), options.sessionId,
@@ -64,6 +68,7 @@ export async function pruneCodexOutput(
           }
         },
       },
+      { campaignAllowance: options.campaignAllowance },
     );
     return result.trimmed && !options.signal?.aborted
       ? Buffer.from(`${result.output}\n\n[fast-jev-output full output: ${path} (Read or grep it if needed)]`)

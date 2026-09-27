@@ -511,6 +511,51 @@ override it explicitly. Incomplete scoring always preserves the unscored content
 Requests take one output batch from every history segment before moving to the
 next batch, so a limited allowance can still finish scoring some chunks.
 
+Library callers preparing a bounded campaign can pass one `JevCampaignAllowance`
+instance as `campaignAllowance` to every `trimOutput` call in the process. Its
+constructor takes the maximum request count, maximum reserved microUSD and an
+enforced worst-case microUSD ceiling per request. It reserves the full amount
+before each dispatch, including retries and refinements, and permits only one
+active request across calls that share the instance. An uncertain or failed
+request keeps its reservation. A transport failure stops the allowance. When
+the allowance is exhausted, unscored output remains intact.
+
+For separate Codex wrapper processes, initialise one `JevDurableCampaignAllowance`
+ledger in a private location before the campaign. Pin `--require-campaign`
+before `--` in every wrapper command and set all four variables below for each
+wrapper process. For example:
+
+```sh
+node "<installed-plugin-root>/dist/codex/run.js" --require-campaign -- npm test
+```
+
+With the marker, missing or invalid settings, a missing ledger, a
+ledger that disagrees with its journal, and a lock left by a crashed process
+preserve original output and send no scoring request. The journal is synced
+before the ledger reservation changes; the lock permits only one active request
+across processes. Do not delete a stale lock until account usage has been
+reconciled.
+
+```text
+JEV_PRUNER_CAMPAIGN_LEDGER=<absolute path to the initialised JSON ledger>
+JEV_PRUNER_CAMPAIGN_MAX_REQUESTS=<approved count>
+JEV_PRUNER_CAMPAIGN_MAX_RESERVED_MICRO_USD=<approved reservation>
+JEV_PRUNER_CAMPAIGN_PER_REQUEST_CEILING_MICRO_USD=<verified ceiling>
+```
+
+The wrapper does not set these variables or initialise the ledger itself.
+Without the marker, an unconfigured wrapper retains its usual optional
+behaviour. Verify the actual wrapper commands and their environment before
+activation; this source cannot prove that every caller pins the marker.
+The declared per-request ceiling still needs proof that the selected Router
+route enforces it at the current model and price. Without that proof the
+reservation is only an estimate and cannot bound provider spend. Do not enable
+the paid campaign on the strength of this source control alone.
+The private ledger and journal also assume trusted local storage. Restoring
+both files to an earlier matching state is not detectable, and whole-machine
+power-loss durability has not been verified. An account-owned spend cap is
+needed if those risks must be covered.
+
 A 76,379-char log went from a 2,227-char preview that did not contain the error
 line to 4,013 chars of pruned output that did.
 

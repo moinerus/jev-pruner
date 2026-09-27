@@ -1,5 +1,7 @@
 import { estimateStateTokens, estimateTokens, noulAnswer } from './jev.js';
 import type { JevAsker, JevQuestions } from './jev.js';
+import { JevCampaignExhaustedError } from './campaign-allowance.js';
+import type { JevScoringAllowance } from './campaign-allowance.js';
 import { splitHistory } from './history.js';
 import type { ConversationMessage, HistoryEntry } from './history.js';
 import { classifyInformation, isProtectedLine, keepScore } from './retention.js';
@@ -39,6 +41,8 @@ export interface TrimOutputOptions {
   maxChars?: number;
   /** Maximum additional Jev requests, including refinement and retries. */
   maxScoringRequests?: number;
+  /** Shared across trims; requires a verified route-enforced per-call cost ceiling. */
+  campaignAllowance?: JevScoringAllowance;
   /** Short omission markers and one recovery footer, included in maxChars. */
   compactMarkers?: boolean;
 }
@@ -410,17 +414,28 @@ async function trimOutputAttempt(
     async ask(state, questions) {
       if (requestBudget.remaining === 0) throw new Error('Jev request budget exhausted');
       requestBudget.remaining -= 1;
-      return asker.ask(state, questions);
+      return options.campaignAllowance
+        ? options.campaignAllowance.ask(asker, state, questions)
+        : asker.ask(state, questions);
     },
   };
   const scores = Array<number>(chunks.length).fill(0);
   try {
     const requests = scoringRequests(input, chunks, histories, maxStateTokens)
-      .slice(0, requestBudget.remaining);
+      .slice(0, Math.min(requestBudget.remaining, options.campaignAllowance?.availableRequests ?? Infinity));
     if (requests.length === 0) return untrimmed(input.output, chunks.length, [], 'no_scoring_capacity', options.onDecision);
-    const answered = await Promise.allSettled(requests.map(async ({ state, batch }) =>
-      limitedAsker.ask(state, Object.assign({}, ...batch.map(questionFor))),
-    ));
+    const answered = options.campaignAllowance
+      ? [] as PromiseSettledResult<Awaited<ReturnType<JevAsker['ask']>>>[]
+      : await Promise.allSettled(requests.map(async ({ state, batch }) =>
+        limitedAsker.ask(state, Object.assign({}, ...batch.map(questionFor))),
+      ));
+    if (options.campaignAllowance) {
+      for (const { state, batch } of requests) {
+        answered.push({ status: 'fulfilled', value: await limitedAsker.ask(
+          state, Object.assign({}, ...batch.map(questionFor)),
+        ) });
+      }
+    }
     for (let offset = 0; offset < requests.length; offset += 1) {
       const response = answered[offset]!;
       if (response.status === 'rejected') throw response.reason;
@@ -432,6 +447,9 @@ async function trimOutputAttempt(
       }
     }
   } catch (error) {
+    if (error instanceof JevCampaignExhaustedError) {
+      return untrimmed(input.output, chunks.length, scores, 'no_scoring_capacity', options.onDecision);
+    }
     if (maxTokensExceeded(error) && retriesRemaining > 0 && maxStateTokens >= 2_000 && requestBudget.remaining > 0) {
       return trimOutputAttempt(
         input,
@@ -451,6 +469,7 @@ async function trimOutputAttempt(
     asker: limitedAsker,
     maxStateTokens,
     requestBudget,
+    campaignAllowance: options.campaignAllowance,
     onDecision: options.onDecision,
     compactMarkers: options.compactMarkers === true,
   });
@@ -468,6 +487,7 @@ async function assemble(
     asker: JevAsker;
     maxStateTokens: number;
     requestBudget: { remaining: number };
+    campaignAllowance?: JevScoringAllowance;
     onDecision?: TrimOutputOptions['onDecision'];
     compactMarkers: boolean;
   },
@@ -497,7 +517,8 @@ async function assemble(
     for (const index of [...keptIndexes].filter(index => !omitted.has(index)).sort(
       (a, b) => chunks[b]!.chars - chunks[a]!.chars,
     )) {
-      if (render().length <= maxChars || opts.requestBudget.remaining === 0) break;
+      if (render().length <= maxChars || opts.requestBudget.remaining === 0 ||
+          opts.campaignAllowance?.availableRequests === 0) break;
       let refined: RefinedChunk | undefined;
       try {
         refined = await shrinkChunkWithJev(
@@ -507,7 +528,7 @@ async function assemble(
           asker,
           keepThreshold,
           maxStateTokens,
-          opts.requestBudget.remaining,
+          Math.min(opts.requestBudget.remaining, opts.campaignAllowance?.availableRequests ?? Infinity),
           maxChars / keptIndexes.size,
           chunkBoundary(chunks, index),
           opts.compactMarkers,
