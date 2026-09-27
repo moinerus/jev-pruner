@@ -4,11 +4,13 @@ import { createCodexRouterAsker } from './router-asker.js';
 import { campaignFromEnvironment } from './campaign.js';
 
 const args = process.argv.slice(2);
-if (args[0] !== '--' || args.length < 2) {
-  process.stderr.write('Usage: node run.js -- <executable> [arguments...]\n');
+const requireCampaign = args[0] === '--require-campaign';
+const commandArgs = requireCampaign ? args.slice(1) : args;
+if (commandArgs[0] !== '--' || commandArgs.length < 2) {
+  process.stderr.write('Usage: node run.js [--require-campaign] -- <executable> [arguments...]\n');
   process.exitCode = 2;
 } else {
-  const [command, ...parameters] = args.slice(1);
+  const [command, ...parameters] = commandArgs.slice(1);
   const child = spawn(command, parameters, { stdio: ['inherit', 'pipe', 'inherit'] });
   const buffers: Buffer[] = [];
   const limit = 8 * 1024 * 1024;
@@ -46,7 +48,7 @@ if (args[0] !== '--' || args.length < 2) {
   child.on('close', async (code, signal) => {
     if (!streaming) {
       const output = Buffer.concat(buffers);
-      const campaign = campaignFromEnvironment(process.env);
+      const campaign = campaignFromEnvironment(process.env, requireCampaign);
       const displayed = code === 0 && !signal
         ? await pruneCodexOutput(output, [command, ...parameters].join(' '), {
           cwd: process.cwd(),

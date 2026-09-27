@@ -521,8 +521,15 @@ request keeps its reservation. A transport failure stops the allowance. When
 the allowance is exhausted, unscored output remains intact.
 
 For separate Codex wrapper processes, initialise one `JevDurableCampaignAllowance`
-ledger in a private location before the campaign. Set all four variables below
-for each wrapper process. Missing or invalid settings, a missing ledger, a
+ledger in a private location before the campaign. Pin `--require-campaign`
+before `--` in every wrapper command and set all four variables below for each
+wrapper process. For example:
+
+```sh
+node "<installed-plugin-root>/dist/codex/run.js" --require-campaign -- npm test
+```
+
+With the marker, missing or invalid settings, a missing ledger, a
 ledger that disagrees with its journal, and a lock left by a crashed process
 preserve original output and send no scoring request. The journal is synced
 before the ledger reservation changes; the lock permits only one active request
@@ -537,6 +544,9 @@ JEV_PRUNER_CAMPAIGN_PER_REQUEST_CEILING_MICRO_USD=<verified ceiling>
 ```
 
 The wrapper does not set these variables or initialise the ledger itself.
+Without the marker, an unconfigured wrapper retains its usual optional
+behaviour. Verify the actual wrapper commands and their environment before
+activation; this source cannot prove that every caller pins the marker.
 The declared per-request ceiling still needs proof that the selected Router
 route enforces it at the current model and price. Without that proof the
 reservation is only an estimate and cannot bound provider spend. Do not enable

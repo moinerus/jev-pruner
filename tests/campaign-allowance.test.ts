@@ -5,9 +5,13 @@ import { trimOutput } from '../src/output.js';
 import type { JevAsker, JevQuestions } from '../src/jev.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { campaignFromEnvironment } from '../src/codex/campaign.js';
 import { pruneCodexOutput } from '../src/codex/prune.js';
+import { saveContext } from '../src/codex/context.js';
 
 const answer = (questions: JevQuestions) => ({
   answers: Object.fromEntries(Object.keys(questions).map(id => [id, { noul: 0 }])),
@@ -28,6 +32,81 @@ describe('durable Jev campaign allowance', () => {
     });
     expect(displayed).toEqual(source);
     expect(calls).toBe(0);
+  });
+
+  it('requires campaign settings on explicit opt-in even when all variables are absent', async () => {
+    const campaign = campaignFromEnvironment({}, true);
+    expect(campaign).toEqual({ required: true });
+    const source = Buffer.from('progress item cached\n'.repeat(4_000));
+    let calls = 0;
+    const displayed = await pruneCodexOutput(source, 'build', {
+      cwd: tmpdir(), sessionId: 'offline', campaignRequired: campaign.required,
+      campaignAllowance: campaign.allowance,
+      asker: { async ask() { calls += 1; return { answers: {} }; } },
+    });
+    expect(displayed).toEqual(source);
+    expect(calls).toBe(0);
+    expect(campaignFromEnvironment({})).toEqual({ required: false });
+  });
+
+  it('passes the CLI marker before the command and keeps the unmarked route optional', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jev-campaign-cli-'));
+    try {
+      const sessionId = 'campaign-test';
+      const transcript = join(dir, 'rollout.jsonl');
+      writeFileSync(transcript, [
+        { type: 'session_meta', payload: { id: sessionId } },
+        { type: 'response_item', payload: { type: 'message', role: 'user', content: [
+          { type: 'input_text', text: 'Check the build result.' },
+        ] } },
+      ].map(value => JSON.stringify(value)).join('\n'));
+      await saveContext({
+        hook_event_name: 'PreToolUse', tool_name: 'Bash',
+        session_id: sessionId, transcript_path: transcript,
+      }, dir);
+      const callsPath = join(dir, 'calls.txt');
+      writeFileSync(callsPath, '');
+      const preload = join(dir, 'fake-fetch.mjs');
+      writeFileSync(preload, `import os from 'node:os';\n` +
+        `import { appendFileSync } from 'node:fs';\n` +
+        `try { os.userInfo(); } catch { os.userInfo = () => ({ username: 'test' }); }\n` +
+        `globalThis.fetch = async () => { appendFileSync(${JSON.stringify(callsPath)}, 'x'); throw new Error('offline'); };\n`);
+      const source = `${'cache '.repeat(35)}\n`.repeat(400);
+      const sourcePath = join(dir, 'stdout.txt');
+      writeFileSync(sourcePath, source);
+      const env = { ...process.env, HOME: dir, USERPROFILE: dir,
+        CODEX_THREAD_ID: sessionId, TYPESAFE_API_KEY: 'synthetic' };
+      delete env.JEV_PRUNER_CAMPAIGN_LEDGER;
+      delete env.JEV_PRUNER_CAMPAIGN_MAX_REQUESTS;
+      delete env.JEV_PRUNER_CAMPAIGN_MAX_RESERVED_MICRO_USD;
+      delete env.JEV_PRUNER_CAMPAIGN_PER_REQUEST_CEILING_MICRO_USD;
+      const run = async (marker: boolean) => {
+        const child = spawn(process.execPath, [
+          '--import', pathToFileURL(preload).href,
+          '--import', pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href,
+          resolve('src/codex/run.ts'), ...(marker ? ['--require-campaign'] : []), '--',
+          process.execPath, '-e', 'process.stdout.write(require("node:fs").readFileSync(process.argv[1]))', sourcePath,
+        ], { cwd: dir, env });
+        const chunks: Buffer[] = [];
+        const errors: Buffer[] = [];
+        child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+        child.stderr.on('data', (chunk: Buffer) => errors.push(chunk));
+        child.stdin.end();
+        return new Promise<{ stdout: Buffer; stderr: string; code: number | null }>((done, fail) => {
+          child.on('error', fail);
+          child.on('close', code => done({ stdout: Buffer.concat(chunks),
+            stderr: Buffer.concat(errors).toString(), code }));
+        });
+      };
+      const required = await run(true);
+      expect(required.code, required.stderr).toBe(0);
+      expect(required.stdout.toString()).toBe(source);
+      expect(readFileSync(callsPath, 'utf8')).toBe('');
+      const optional = await run(false);
+      expect(optional.code, optional.stderr).toBe(0);
+      expect(optional.stdout.toString()).toBe(source);
+      expect(readFileSync(callsPath, 'utf8')).toBe('x');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it('reserves across instances and refuses a simultaneous second dispatch', async () => {

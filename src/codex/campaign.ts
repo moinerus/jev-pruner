@@ -1,6 +1,6 @@
 import { JevDurableCampaignAllowance } from './durable-campaign-allowance.js';
 
-export function campaignFromEnvironment(env: NodeJS.ProcessEnv): {
+export function campaignFromEnvironment(env: NodeJS.ProcessEnv, requireCampaign = false): {
   required: boolean;
   allowance?: JevDurableCampaignAllowance;
 } {
@@ -10,7 +10,7 @@ export function campaignFromEnvironment(env: NodeJS.ProcessEnv): {
     env.JEV_PRUNER_CAMPAIGN_MAX_RESERVED_MICRO_USD,
     env.JEV_PRUNER_CAMPAIGN_PER_REQUEST_CEILING_MICRO_USD,
   ];
-  if (values.every(value => value === undefined)) return { required: false };
+  if (values.every(value => value === undefined)) return { required: requireCampaign };
   try {
     if (values.some(value => !value)) return { required: true };
     return { required: true, allowance: new JevDurableCampaignAllowance(
