@@ -18,6 +18,10 @@ async function withEndpoint(
 }
 
 describe('Codex Router Jev asker', () => {
+  it('pins the dedicated Jev campaign route', () => {
+    expect(CODEX_ROUTER_JEV_MODEL).toBe('openrouter-jev-campaign/jev-1.13');
+  });
+
   it('posts Decisions requests using only the caller capability', async () => {
     const fetch = vi.fn(async (url: string, init?: RequestInit) => new Response(
       JSON.stringify({ answers: { keep: { noul: 0 } } }),

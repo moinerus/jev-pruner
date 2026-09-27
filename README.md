@@ -181,11 +181,12 @@ Choose one transport for the shell session that launches Codex:
   `http://127.0.0.1:4202`.
 
 Codex Router mode requires an installed router version that exposes
-`/v1/decisions`, an enabled OpenRouter provider, and the hidden
-`openrouter-decisions/jev-latest` route. The router owns the provider
-credential. Do not copy its caller capability into a prompt, plugin setting, or
-repository. Missing router access, a timeout, or a rejected Decisions response
-leaves stdout unchanged.
+`/v1/decisions`, the enabled `openrouter-jev-campaign` provider, and the hidden
+`openrouter-jev-campaign/jev-1.13` route. This route uses its own OpenRouter key
+with a lifetime spend limit. The router owns the provider credential. Do not
+copy its caller capability into a prompt, plugin setting, or repository.
+Missing router access, a timeout, or a rejected Decisions response leaves
+stdout unchanged.
 
 For direct TypeSafe access, create a [TypeSafe API key](https://console.typesafe.ai/settings/keys) and ensure
 your account has [API credits](https://console.typesafe.ai/settings/billing).
@@ -265,8 +266,11 @@ $jev-pruner Run npm test through the pruner and report the test results.
 ```
 
 Replace `npm test` with your non-interactive build, test, install, or search
-command. The skill resolves its installed location and calls the wrapper for
-you. Commands that Codex runs outside the wrapper are not intercepted.
+command. The skill resolves its installed location and calls the wrapper with
+`--require-campaign` for you. Until you initialise a durable campaign ledger
+and provide all four settings below, the wrapper returns original output
+without a paid scoring request. Commands that Codex runs outside the wrapper
+are not intercepted.
 
 For a known noisy example, start Codex in the `jev-pruner` checkout and send:
 
@@ -547,10 +551,13 @@ The wrapper does not set these variables or initialise the ledger itself.
 Without the marker, an unconfigured wrapper retains its usual optional
 behaviour. Verify the actual wrapper commands and their environment before
 activation; this source cannot prove that every caller pins the marker.
-The declared per-request ceiling still needs proof that the selected Router
-route enforces it at the current model and price. Without that proof the
-reservation is only an estimate and cannot bound provider spend. Do not enable
-the paid campaign on the strength of this source control alone.
+The declared per-request ceiling needs proof that the selected Router route
+enforces it at the current model and price. Otherwise its reservation is only
+an estimate. The dedicated Jev campaign route can instead use an OpenRouter
+key with a provider-enforced lifetime spend limit no greater than the approved
+total allowance. Verify that key's limit, lack of reset, and isolation from the
+ordinary OpenRouter key before enabling paid scoring. The provider cap then
+bounds total spend even if the per-request reservation is conservative.
 The private ledger and journal also assume trusted local storage. Restoring
 both files to an earlier matching state is not detectable, and whole-machine
 power-loss durability has not been verified. An account-owned spend cap is

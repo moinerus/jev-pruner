@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { JevAsker, JevQuestions, JevResponse, JevState } from '../jev.js';
 import { parseJevResponse } from '../jev.js';
 
-export const CODEX_ROUTER_JEV_MODEL = 'openrouter-decisions/jev-latest';
+export const CODEX_ROUTER_JEV_MODEL = 'openrouter-jev-campaign/jev-1.13';
 
 export interface CodexRouterAskerOptions {
   home?: string;
