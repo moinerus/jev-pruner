@@ -520,11 +520,31 @@ active request across calls that share the instance. An uncertain or failed
 request keeps its reservation. A transport failure stops the allowance. When
 the allowance is exhausted, unscored output remains intact.
 
-This is an in-process control and the Codex wrapper does not enable it. A paid
-campaign across wrapper processes still needs a shared durable allowance, plus
-proof that the Router route enforces the declared per-request cost ceiling.
-Without that proof the reserved amount is only an estimate and cannot bound
-provider spend. No live campaign should rely on this class alone.
+For separate Codex wrapper processes, initialise one `JevDurableCampaignAllowance`
+ledger in a private location before the campaign. Set all four variables below
+for each wrapper process. Missing or invalid settings, a missing ledger, a
+ledger that disagrees with its journal, and a lock left by a crashed process
+preserve original output and send no scoring request. The journal is synced
+before the ledger reservation changes; the lock permits only one active request
+across processes. Do not delete a stale lock until account usage has been
+reconciled.
+
+```text
+JEV_PRUNER_CAMPAIGN_LEDGER=<absolute path to the initialised JSON ledger>
+JEV_PRUNER_CAMPAIGN_MAX_REQUESTS=<approved count>
+JEV_PRUNER_CAMPAIGN_MAX_RESERVED_MICRO_USD=<approved reservation>
+JEV_PRUNER_CAMPAIGN_PER_REQUEST_CEILING_MICRO_USD=<verified ceiling>
+```
+
+The wrapper does not set these variables or initialise the ledger itself.
+The declared per-request ceiling still needs proof that the selected Router
+route enforces it at the current model and price. Without that proof the
+reservation is only an estimate and cannot bound provider spend. Do not enable
+the paid campaign on the strength of this source control alone.
+The private ledger and journal also assume trusted local storage. Restoring
+both files to an earlier matching state is not detectable, and whole-machine
+power-loss durability has not been verified. An account-owned spend cap is
+needed if those risks must be covered.
 
 A 76,379-char log went from a 2,227-char preview that did not contain the error
 line to 4,013 chars of pruned output that did.

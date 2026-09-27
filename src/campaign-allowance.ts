@@ -1,11 +1,16 @@
 import type { JevAsker, JevQuestions, JevResponse, JevState } from './jev.js';
 
+export interface JevScoringAllowance {
+  readonly availableRequests: number;
+  ask(asker: JevAsker, state: JevState, questions: JevQuestions): Promise<JevResponse>;
+}
+
 export class JevCampaignExhaustedError extends Error {
   constructor() { super('Jev campaign allowance exhausted'); }
 }
 
 /** Shared reservation for a campaign whose route has an enforced per-call cost ceiling. */
-export class JevCampaignAllowance {
+export class JevCampaignAllowance implements JevScoringAllowance {
   private attempted = 0;
   private reserved = 0;
   private stopped = false;

@@ -1,10 +1,116 @@
 import { describe, expect, it } from 'vitest';
 import { JevCampaignAllowance } from '../src/campaign-allowance.js';
+import { JevDurableCampaignAllowance } from '../src/codex/durable-campaign-allowance.js';
 import { trimOutput } from '../src/output.js';
 import type { JevAsker, JevQuestions } from '../src/jev.js';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { campaignFromEnvironment } from '../src/codex/campaign.js';
+import { pruneCodexOutput } from '../src/codex/prune.js';
 
 const answer = (questions: JevQuestions) => ({
   answers: Object.fromEntries(Object.keys(questions).map(id => [id, { noul: 0 }])),
+});
+
+describe('durable Jev campaign allowance', () => {
+  it('keeps the Codex wrapper on original output for partial campaign settings', async () => {
+    expect(campaignFromEnvironment({}).required).toBe(false);
+    const partial = campaignFromEnvironment({ JEV_PRUNER_CAMPAIGN_LEDGER: 'missing' });
+    expect(partial.required).toBe(true);
+    expect(partial.allowance).toBeUndefined();
+    const source = Buffer.from('progress item cached\n'.repeat(4_000));
+    let calls = 0;
+    const displayed = await pruneCodexOutput(source, 'build', {
+      cwd: tmpdir(), sessionId: 'offline', campaignRequired: partial.required,
+      campaignAllowance: partial.allowance,
+      asker: { async ask() { calls += 1; return { answers: {} }; } },
+    });
+    expect(displayed).toEqual(source);
+    expect(calls).toBe(0);
+  });
+
+  it('reserves across instances and refuses a simultaneous second dispatch', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jev-campaign-'));
+    try {
+      const path = join(dir, 'allowance.json');
+      const first = await JevDurableCampaignAllowance.initialise(path, 2, 200, 100);
+      const second = new JevDurableCampaignAllowance(path, 2, 200, 100);
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      let started!: () => void;
+      const dispatched = new Promise<void>(resolve => { started = resolve; });
+      let calls = 0;
+      const asker: JevAsker = {
+        async ask(_state, questions) {
+          calls += 1;
+          started();
+          await held;
+          return answer(questions);
+        },
+      };
+      const questions: JevQuestions = { one: { type: 'noul', instructions: 'Keep?' } };
+      const pending = first.ask(asker, 'state', questions);
+      await dispatched;
+      expect(second.availableRequests).toBe(0);
+      await expect(second.ask(asker, 'state', questions)).rejects.toThrow('exhausted');
+      release();
+      await pending;
+      await second.ask(asker, 'state', questions);
+      expect(calls).toBe(2);
+      expect(first.attemptedRequests).toBe(2);
+      expect(second.reservedMicroUsd).toBe(200);
+      expect(first.availableRequests).toBe(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('stops after an uncertain failure and never recreates a missing ledger', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jev-campaign-'));
+    try {
+      const path = join(dir, 'allowance.json');
+      const allowance = await JevDurableCampaignAllowance.initialise(path, 3, 300, 100);
+      const questions: JevQuestions = { one: { type: 'noul', instructions: 'Keep?' } };
+      await expect(allowance.ask({ async ask() { throw new Error('transport failed'); } },
+        'state', questions)).rejects.toThrow('transport failed');
+      expect(new JevDurableCampaignAllowance(path, 3, 300, 100).availableRequests).toBe(0);
+      expect(allowance.reservedMicroUsd).toBe(100);
+      rmSync(path);
+      expect(allowance.availableRequests).toBe(0);
+      await expect(allowance.ask({ async ask() { throw new Error('unexpected dispatch'); } },
+        'state', questions)).rejects.toThrow('ledger');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('fails closed on a stale lock or modified ledger', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jev-campaign-'));
+    try {
+      const path = join(dir, 'allowance.json');
+      const allowance = await JevDurableCampaignAllowance.initialise(path, 2, 200, 100);
+      writeFileSync(`${path}.lock`, 'stale');
+      expect(allowance.availableRequests).toBe(0);
+      rmSync(`${path}.lock`);
+      writeFileSync(path, '{}');
+      expect(allowance.availableRequests).toBe(0);
+      await expect(allowance.ask({ async ask() { throw new Error('unexpected dispatch'); } },
+        'state', {})).rejects.toThrow('ledger');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('refuses an older valid ledger restored after a reserved request', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jev-campaign-'));
+    try {
+      const path = join(dir, 'allowance.json');
+      const allowance = await JevDurableCampaignAllowance.initialise(path, 2, 200, 100);
+      const earlier = readFileSync(path);
+      let calls = 0;
+      const asker: JevAsker = { async ask(_state, questions) { calls += 1; return answer(questions); } };
+      await allowance.ask(asker, 'state', {});
+      writeFileSync(path, earlier);
+      expect(allowance.availableRequests).toBe(0);
+      await expect(allowance.ask(asker, 'state', {})).rejects.toThrow('ledger');
+      expect(calls).toBe(1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });
 const input = { command: 'build', goal: 'Check result', output: 'progress item cached\n'.repeat(4_000) };
 

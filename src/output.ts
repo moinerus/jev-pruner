@@ -1,7 +1,7 @@
 import { estimateStateTokens, estimateTokens, noulAnswer } from './jev.js';
 import type { JevAsker, JevQuestions } from './jev.js';
 import { JevCampaignExhaustedError } from './campaign-allowance.js';
-import type { JevCampaignAllowance } from './campaign-allowance.js';
+import type { JevScoringAllowance } from './campaign-allowance.js';
 import { splitHistory } from './history.js';
 import type { ConversationMessage, HistoryEntry } from './history.js';
 import { classifyInformation, isProtectedLine, keepScore } from './retention.js';
@@ -42,7 +42,7 @@ export interface TrimOutputOptions {
   /** Maximum additional Jev requests, including refinement and retries. */
   maxScoringRequests?: number;
   /** Shared across trims; requires a verified route-enforced per-call cost ceiling. */
-  campaignAllowance?: JevCampaignAllowance;
+  campaignAllowance?: JevScoringAllowance;
   /** Short omission markers and one recovery footer, included in maxChars. */
   compactMarkers?: boolean;
 }
@@ -487,7 +487,7 @@ async function assemble(
     asker: JevAsker;
     maxStateTokens: number;
     requestBudget: { remaining: number };
-    campaignAllowance?: JevCampaignAllowance;
+    campaignAllowance?: JevScoringAllowance;
     onDecision?: TrimOutputOptions['onDecision'];
     compactMarkers: boolean;
   },

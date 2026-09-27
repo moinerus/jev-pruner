@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { pruneCodexOutput } from './prune.js';
 import { createCodexRouterAsker } from './router-asker.js';
+import { campaignFromEnvironment } from './campaign.js';
 
 const args = process.argv.slice(2);
 if (args[0] !== '--' || args.length < 2) {
@@ -45,6 +46,7 @@ if (args[0] !== '--' || args.length < 2) {
   child.on('close', async (code, signal) => {
     if (!streaming) {
       const output = Buffer.concat(buffers);
+      const campaign = campaignFromEnvironment(process.env);
       const displayed = code === 0 && !signal
         ? await pruneCodexOutput(output, [command, ...parameters].join(' '), {
           cwd: process.cwd(),
@@ -56,6 +58,8 @@ if (args[0] !== '--' || args.length < 2) {
               signal: controller.signal,
             })
             : undefined,
+          campaignRequired: campaign.required,
+          campaignAllowance: campaign.allowance,
           signal: controller.signal,
         })
         : output;
