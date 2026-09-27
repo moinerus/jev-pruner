@@ -19,6 +19,11 @@ const withLine = (rows: string[], index: number, text: string) => {
   copy[index] = text;
   return copy.join('\n');
 };
+const withLines = (rows: string[], index: number, lines: readonly string[]) => {
+  const copy = [...rows];
+  copy.splice(index, lines.length, ...lines);
+  return copy.join('\n');
+};
 
 // Expectations are fixed here, independently of the three evaluation arms.
 export const CASES: readonly RetentionCase[] = [
@@ -62,8 +67,13 @@ export const CASES: readonly RetentionCase[] = [
     name: 'stack frame away from boundaries', command: 'npm test',
     task: 'Find the source line that caused the cart crash.',
     earlierContext: 'Trace the first application frame, not the framework tail.',
-    stdout: withLine([...progress(450), 'Tests: 44 passed, 1 failed'], 224,
-      '    at CartService.total (src/cart/service.ts:188:17)'),
+    stdout: withLines([...progress(450), 'Tests: 44 passed, 1 failed'], 221, [
+      'Error: cart total crashed',
+      '    at FrameworkRunner.invoke (node_modules/framework/runner.js:44:3)',
+      '    at CartService.total (src/cart/service.ts:188:17)',
+      '    at CartController.handle (src/cart/controller.ts:52:9)',
+      '    at FrameworkRunner.execute (node_modules/framework/runner.js:91:2)',
+    ]),
     stderr: '', exitStatus: 0,
     requiredFacts: ['at CartService.total (src/cart/service.ts:188:17)', 'Tests: 44 passed, 1 failed'],
     nextAction: 'Inspect src/cart/service.ts:188.',
