@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { saveContext } from '../src/codex/context.js';
 import { pruneCodexOutput } from '../src/codex/prune.js';
@@ -84,19 +85,39 @@ function assess(testCase: RetentionCase, displayed: string, stderr: string, stat
     testCase.forbiddenConclusions.every(forbidden => conclusion !== forbidden);
 }
 
-async function runWrapper(testCase: RetentionCase) {
-  const cwd = await temporaryDirectory();
-  const stdoutPath = join(cwd, 'stdout.txt');
-  const stderrPath = join(cwd, 'stderr.txt');
+async function runWrapper(testCase: RetentionCase, exitStatus = testCase.exitStatus) {
+  const options = await codexOptions(testCase);
+  const stdoutPath = join(options.cwd, 'stdout.txt');
+  const stderrPath = join(options.cwd, 'stderr.txt');
+  const callsPath = join(options.cwd, 'transport-calls.txt');
+  const preloadPath = join(options.cwd, 'stub-transport.mjs');
+  const secretPath = join(options.cwd, '.codex', 'codex-router', 'caller-secret');
+  await mkdir(join(secretPath, '..'), { recursive: true });
+  await writeFile(secretPath, 'synthetic-local-capability');
+  await writeFile(callsPath, '');
+  await writeFile(preloadPath, [
+    'import os from "node:os";',
+    'import { syncBuiltinESMExports } from "node:module";',
+    'import { appendFileSync } from "node:fs";',
+    `os.homedir = () => ${JSON.stringify(options.cwd)};`,
+    'syncBuiltinESMExports();',
+    'globalThis.fetch = async (_url, init) => {',
+    `  appendFileSync(${JSON.stringify(callsPath)}, "x");`,
+    '  const { questions } = JSON.parse(init.body);',
+    '  const answers = Object.fromEntries(Object.keys(questions).map(id => [id, { noul: 0 }]));',
+    '  return new Response(JSON.stringify({ answers }), { status: 200 });',
+    '};',
+  ].join('\n'));
   await writeFile(stdoutPath, testCase.stdout);
   await writeFile(stderrPath, testCase.stderr);
   const script = 'const fs=require("node:fs");process.stdout.write(fs.readFileSync(process.argv[1]));process.stderr.write(fs.readFileSync(process.argv[2]));process.exitCode=Number(process.argv[3])';
   const compiled = resolve('dist/codex/run.js');
   const loader = existsSync(compiled) ? [compiled] : ['--import', 'tsx', resolve('src/codex/run.ts')];
-  const child = spawn(process.execPath, [...loader, '--',
-    process.execPath, '-e', script, stdoutPath, stderrPath, String(testCase.exitStatus)], {
-    cwd: resolve('.'), env: { ...process.env, CODEX_THREAD_ID: '', TYPESAFE_API_KEY: '',
-      JEV_PRUNER_TRANSPORT: '' },
+  const child = spawn(process.execPath, ['--import', pathToFileURL(preloadPath).href, ...loader, '--',
+    process.execPath, '-e', script, stdoutPath, stderrPath, String(exitStatus)], {
+    cwd: options.cwd, env: { ...process.env, CODEX_THREAD_ID: sessionId,
+      TYPESAFE_API_KEY: 'synthetic', JEV_PRUNER_TRANSPORT: 'codex-router',
+      JEV_PRUNER_CODEX_ROUTER_BASE_URL: 'http://127.0.0.1:4202' },
   });
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
@@ -106,7 +127,8 @@ async function runWrapper(testCase: RetentionCase) {
     child.on('error', fail);
     child.on('close', status => done({ stdout: Buffer.concat(stdout),
       stderr: Buffer.concat(stderr), status }));
-  });
+  }).then(async result => ({ ...result, transportCalls: (await readFile(callsPath, 'utf8')).length,
+    archiveDir: join(options.cwd, '.jev-pruner') }));
 }
 
 afterEach(async () => {
@@ -130,6 +152,8 @@ describe('frozen offline retention cases', () => {
       expect(wrapped.stdout.equals(Buffer.from(testCase.stdout)), wrapped.stderr.toString()).toBe(true);
       expect(wrapped.stderr.equals(Buffer.from(testCase.stderr))).toBe(true);
       expect(wrapped.status).toBe(testCase.exitStatus);
+      expect(wrapped.transportCalls).toBe(0);
+      await expect(readdir(wrapped.archiveDir)).rejects.toMatchObject({ code: 'ENOENT' });
       displayed = wrapped.stdout.toString();
     } else {
       const options = await codexOptions(testCase);
@@ -163,6 +187,17 @@ describe('frozen offline retention cases', () => {
 });
 
 describe('strict floor and failure recovery', () => {
+  it('proves the non-zero gate with the same ready stub transport at zero exit', async () => {
+    const testCase = CASES[1]!;
+    const wrapped = await runWrapper(testCase, 0);
+    expect(wrapped.status).toBe(0);
+    expect(wrapped.transportCalls).toBeGreaterThan(0);
+    expect(wrapped.stderr).toEqual(Buffer.from(testCase.stderr));
+    const archives = (await readdir(wrapped.archiveDir)).filter(name => name.endsWith('.txt'));
+    expect(archives).toHaveLength(1);
+    expect(await readFile(join(wrapped.archiveDir, archives[0]!))).toEqual(Buffer.from(testCase.stdout));
+  });
+
   it.each([9_999, 10_000, 10_001])('%i estimated tokens uses the strict eligibility floor', async tokens => {
     const testCase = CASES[0]!;
     const options = await codexOptions(testCase);
@@ -217,7 +252,7 @@ describe('strict floor and failure recovery', () => {
     },
   );
 
-  it('counts every fake upstream request under partial coverage and refinement', async () => {
+  it('counts every fake upstream request before partial-coverage budget fallback', async () => {
     const testCase = CASES[0]!;
     const ask = oracle(testCase);
     const decisions: string[] = [];
@@ -231,6 +266,27 @@ describe('strict floor and failure recovery', () => {
     expect(result.output).toBe(testCase.stdout);
     expect(result.output.includes(testCase.requiredFacts[0]!)).toBe(true);
     expect(result.output.includes(testCase.requiredFacts[1]!)).toBe(true);
+  });
+
+  it('counts line-group refinement and recovers the exact archived bytes', async () => {
+    const testCase = CASES[0]!;
+    const cwd = await temporaryDirectory();
+    const archive = join(cwd, 'full-output.txt');
+    await writeFile(archive, testCase.stdout);
+    const ask = oracle(testCase);
+    const result = await trimOutput({ command: testCase.command, goal: testCase.task,
+      output: testCase.stdout, fullOutputPath: archive }, { ask }, {
+      maxChars: 1_500, compactMarkers: true, maxScoringRequests: 40,
+    });
+    const questionIds = ask.mock.calls.flatMap(([, questions]) => Object.keys(questions));
+    expect(questionIds.some(id => id.startsWith('c'))).toBe(true);
+    expect(questionIds.some(id => id.startsWith('g'))).toBe(true);
+    expect(ask.mock.calls.length).toBeLessThanOrEqual(41);
+    expect(result.trimmed).toBe(true);
+    expect(result.output).toContain(testCase.requiredFacts[0]);
+    expect(result.output).toContain(testCase.requiredFacts[1]);
+    expect(result.output).toContain(archive);
+    expect(await readFile(archive)).toEqual(Buffer.from(testCase.stdout));
   });
 
   it('counts retry requests after a fake upstream token rejection', async () => {
