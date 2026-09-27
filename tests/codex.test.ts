@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { codexMessages } from '../src/codex/history.js';
 import { contextPath, readTranscript, saveContext } from '../src/codex/context.js';
 import { pruneCodexOutput } from '../src/codex/prune.js';
+import { createCodexRouterAsker } from '../src/codex/router-asker.js';
 import { estimateTokens } from '../src/jev.js';
 import type { JevQuestions, JevState } from '../src/jev.js';
 
@@ -123,6 +124,18 @@ describe('Codex output pruning', () => {
     expect(pruned.subarray(0, 100)).toEqual(output.subarray(0, 100));
   });
 
+  it('allows a configured asker to prune without a direct provider API key', async () => {
+    const options = await fixture();
+    const ask = vi.fn(discard);
+    const pruned = await pruneCodexOutput(output, 'npm test', {
+      ...options,
+      apiKey: undefined,
+      asker: { ask },
+    });
+    expect(ask).toHaveBeenCalled();
+    expect(pruned).not.toBe(output);
+  });
+
   it('preserves original output on archive or Jev failures', async () => {
     const options = await fixture();
     const ask = vi.fn(async () => { throw new Error('unavailable'); });
@@ -137,9 +150,38 @@ describe('Codex output pruning', () => {
     expect(discard).not.toHaveBeenCalled();
   });
 
+  it('keeps an exact archive and original stdout when the Router fails', async () => {
+    const options = await fixture();
+    const directFetch = vi.fn();
+    vi.stubGlobal('fetch', directFetch);
+    const routerFetch = vi.fn(async (_url: string, _init?: RequestInit) =>
+      new Response('unavailable', { status: 503 }));
+    const asker = createCodexRouterAsker({
+      readSecret: async () => 'local-capability',
+      fetch: routerFetch,
+    });
+    const result = await pruneCodexOutput(output, 'npm test', {
+      ...options,
+      apiKey: 'synthetic-provider-key',
+      asker,
+    });
+    expect(result).toBe(output);
+    expect(routerFetch).toHaveBeenCalled();
+    expect(routerFetch.mock.calls[0]?.[1]?.headers).toEqual({
+      authorization: 'Bearer local-capability',
+      'content-type': 'application/json',
+    });
+    expect(JSON.stringify(routerFetch.mock.calls)).not.toContain('synthetic-provider-key');
+    expect(directFetch).not.toHaveBeenCalled();
+    const archiveDir = join(options.cwd, '.jev-pruner');
+    const archive = (await readdir(archiveDir)).find(file => file.endsWith('.txt'));
+    expect(archive).toBeDefined();
+    expect(await readFile(join(archiveDir, archive!))).toEqual(output);
+  });
+
   it('fails open for missing state, absent keys, structured output and secret-like content', async () => {
     const options = await fixture();
-    for (const extra of [{ sessionId: undefined }, { apiKey: undefined }, { home: '/unavailable' }]) {
+    for (const extra of [{ sessionId: undefined }, { apiKey: undefined, asker: undefined }, { home: '/unavailable' }]) {
       expect(await pruneCodexOutput(output, 'npm test', { ...options, ...extra })).toBe(output);
     }
     for (const command of ['cat document.txt', 'printenv']) {
