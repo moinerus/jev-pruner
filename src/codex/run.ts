@@ -5,9 +5,12 @@ import { campaignFromEnvironment } from './campaign.js';
 
 const args = process.argv.slice(2);
 const requireCampaign = args[0] === '--require-campaign';
-const commandArgs = requireCampaign ? args.slice(1) : args;
+const campaignArgs = requireCampaign ? args.slice(1) : args;
+const hasGoalFlag = requireCampaign && campaignArgs[0] === '--goal';
+const goal = hasGoalFlag && campaignArgs[1] !== '--' ? campaignArgs[1] : undefined;
+const commandArgs = hasGoalFlag ? campaignArgs.slice(goal === undefined ? 1 : 2) : campaignArgs;
 if (commandArgs[0] !== '--' || commandArgs.length < 2) {
-  process.stderr.write('Usage: node run.js [--require-campaign] -- <executable> [arguments...]\n');
+  process.stderr.write('Usage: node run.js [--require-campaign --goal "short task goal"] -- <executable> [arguments...]\n');
   process.exitCode = 2;
 } else {
   const [command, ...parameters] = commandArgs.slice(1);
@@ -53,6 +56,7 @@ if (commandArgs[0] !== '--' || commandArgs.length < 2) {
         ? await pruneCodexOutput(output, [command, ...parameters].join(' '), {
           cwd: process.cwd(),
           sessionId: process.env.CODEX_THREAD_ID,
+          goal,
           apiKey: process.env.TYPESAFE_API_KEY,
           asker: process.env.JEV_PRUNER_TRANSPORT === 'codex-router'
             ? createCodexRouterAsker({

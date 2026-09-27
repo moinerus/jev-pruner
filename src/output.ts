@@ -34,6 +34,9 @@ export interface TrimOutputOptions {
   onDecision?: (reason: TrimDecision) => void;
   keepThreshold?: number;
   maxStateTokens?: number;
+  /** Reject a request before campaign reservation if its complete JSON body exceeds this estimate. */
+  maxRequestTokens?: number;
+  requestModel?: string;
   /**
    * Cap on rendered pruned output, including markers. If errors or unscored
    * content cannot fit safely, return the original output. 0 means no cap.
@@ -53,6 +56,8 @@ export interface TrimOutputInput {
   output: string;
   fullOutputPath?: string;
   messages?: readonly ConversationMessage[];
+  /** Keep command arguments and whole-output diagnostics local to the caller. */
+  focused?: boolean;
 }
 
 export interface TrimOutputResult {
@@ -200,8 +205,7 @@ function stateFor(
       : {}),
     task: input.goal,
     history,
-    command: input.command,
-    diagnosticsAndResults,
+    ...(!input.focused ? { command: input.command, diagnosticsAndResults } : {}),
     chunks: chunks.map(({ id, text }) => ({ id, text })),
   };
 }
@@ -412,6 +416,12 @@ async function trimOutputAttempt(
   const scoredSegments = Array<number>(chunks.length).fill(0);
   const limitedAsker: JevAsker = {
     async ask(state, questions) {
+      if (options.maxRequestTokens !== undefined &&
+          estimateStateTokens(JSON.stringify({
+            model: options.requestModel ?? 'jev-latest', state, questions,
+          })) > options.maxRequestTokens) {
+        throw new Error('Focused Jev request is too large');
+      }
       if (requestBudget.remaining === 0) throw new Error('Jev request budget exhausted');
       requestBudget.remaining -= 1;
       return options.campaignAllowance

@@ -1,13 +1,14 @@
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { codexMessages } from '../src/codex/history.js';
 import { contextPath, readTranscript, saveContext } from '../src/codex/context.js';
 import { pruneCodexOutput } from '../src/codex/prune.js';
-import { createCodexRouterAsker } from '../src/codex/router-asker.js';
-import { estimateTokens } from '../src/jev.js';
+import { CODEX_ROUTER_JEV_MODEL, createCodexRouterAsker } from '../src/codex/router-asker.js';
+import { estimateStateTokens, estimateTokens } from '../src/jev.js';
+import { JevCampaignAllowance } from '../src/campaign-allowance.js';
 import type { JevQuestions, JevState } from '../src/jev.js';
 
 const directories: string[] = [];
@@ -39,7 +40,7 @@ const discard = vi.fn(async (_state: JevState, questions: JevQuestions) => ({
 }));
 
 async function fixture() {
-  const cwd = await mkdtemp(join(homedir(), 'jev-codex-test-'));
+  const cwd = await mkdtemp(join(tmpdir(), 'jev-codex-test-'));
   directories.push(cwd);
   const path = join(cwd, 'rollout.jsonl');
   await writeFile(path, transcript);
@@ -95,6 +96,49 @@ describe('Codex transcript adapter', () => {
 });
 
 describe('Codex output pruning', () => {
+  it('asks bounded questions using only an explicit goal during a paid campaign', async () => {
+    const options = await fixture();
+    const privateHistory = 'PRIVATE_UNRELATED_CHAT_CONTENT';
+    const pointer = JSON.parse(await readFile(contextPath(sessionId, options.home), 'utf8'));
+    await writeFile(pointer.transcript, `${transcript}\n${privateHistory}`);
+    const states: JevState[] = [];
+    const asker = { async ask(state: JevState, questions: JevQuestions) {
+      states.push(state);
+      expect(estimateStateTokens(JSON.stringify({
+        model: CODEX_ROUTER_JEV_MODEL, state, questions,
+      }))).toBeLessThanOrEqual(6_000);
+      return { answers: Object.fromEntries(Object.keys(questions).map(id => [id, { noul: 0 }])) };
+    } };
+    await pruneCodexOutput(output, 'npm test --workspace PRIVATE_LOCAL_PATH', {
+      ...options, sessionId: undefined,
+      goal: 'Keep test failures and the final result.', asker,
+      campaignRequired: true,
+      campaignAllowance: new JevCampaignAllowance(40, 400_000, 10_000),
+    });
+    expect(states.length).toBeGreaterThan(0);
+    for (const state of states) {
+      expect(state.task).toBe('Keep test failures and the final result.');
+      expect(state.history).toEqual([]);
+      expect(state).not.toHaveProperty('command');
+      expect(state).not.toHaveProperty('diagnosticsAndResults');
+      expect(estimateStateTokens(JSON.stringify(state))).toBeLessThanOrEqual(3_000);
+      expect(JSON.stringify(state)).not.toContain(privateHistory);
+      expect(JSON.stringify(state)).not.toContain('PRIVATE_LOCAL_PATH');
+    }
+  });
+
+  it('does not spend on a missing or oversized campaign goal', async () => {
+    const options = await fixture();
+    const allowance = new JevCampaignAllowance(2, 20_000, 10_000);
+    for (const goal of [undefined, 'x'.repeat(241), 'first\nsecond', 'api_key=synthetic-example']) {
+      expect((await pruneCodexOutput(output, 'npm test', {
+        ...options, goal, campaignRequired: true, campaignAllowance: allowance,
+      })) === output).toBe(true);
+    }
+    expect(discard).not.toHaveBeenCalled();
+    expect(allowance.attemptedRequests).toBe(0);
+  });
+
   it.each([9_999, 10_000])('passes through %i tokens without archives or scoring', async tokens => {
     const options = await fixture();
     const small = Buffer.from('cache\n'.repeat(tokens));
@@ -210,9 +254,11 @@ describe('Codex output pruning', () => {
   });
 });
 
-async function run(parameters: string[]) {
+async function run(parameters: string[], beforeSeparator: string[] = []) {
+  const userInfoFallback = 'import os from "node:os"; try { os.userInfo(); } catch { os.userInfo = () => ({ username: "test" }); }';
   const child = spawn(process.execPath, [
-    '--import', 'tsx', resolve('src/codex/run.ts'), '--', ...parameters,
+    '--import', `data:text/javascript,${encodeURIComponent(userInfoFallback)}`,
+    '--import', 'tsx', resolve('src/codex/run.ts'), ...beforeSeparator, '--', ...parameters,
   ], { env: { ...process.env, CODEX_THREAD_ID: '', TYPESAFE_API_KEY: '' } });
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
@@ -230,6 +276,22 @@ async function run(parameters: string[]) {
 }
 
 describe('Codex command wrapper', () => {
+  it('accepts a short campaign goal before the executable', async () => {
+    const result = await run([
+      process.execPath, '-e', 'process.stdout.write("ready")',
+    ], ['--require-campaign', '--goal', 'Keep final test status.']);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout.toString()).toBe('ready');
+  });
+
+  it('still runs the executable when the campaign goal value is missing', async () => {
+    const result = await run([
+      process.execPath, '-e', 'process.stdout.write("ready")',
+    ], ['--require-campaign', '--goal']);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout.toString()).toBe('ready');
+  });
+
   it('preserves literal arguments, binary stdout, stderr, and failure status', async () => {
     const argument = 'space $HOME "quote"; $(echo must-not-run)';
     const result = await run([process.execPath, '-e', `

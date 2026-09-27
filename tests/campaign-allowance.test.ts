@@ -194,6 +194,16 @@ describe('durable Jev campaign allowance', () => {
 const input = { command: 'build', goal: 'Check result', output: 'progress item cached\n'.repeat(4_000) };
 
 describe('shared Jev campaign allowance', () => {
+  it('rejects oversized requests before reserving campaign budget', async () => {
+    const allowance = new JevCampaignAllowance(2, 20_000, 10_000);
+    let calls = 0;
+    await expect(trimOutput(input, { async ask() { calls += 1; return { answers: {} }; } }, {
+      campaignAllowance: allowance, maxRequestTokens: 1,
+    })).rejects.toThrow('too large');
+    expect(calls).toBe(0);
+    expect(allowance.attemptedRequests).toBe(0);
+  });
+
   it('reserves the worst case before dispatch and runs only one request at a time', async () => {
     const allowance = new JevCampaignAllowance(3, 200, 100);
     let active = 0;
