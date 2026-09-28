@@ -91,6 +91,15 @@ it('keeps wrapper archives and metrics in a writable runtime directory', async (
   expect(await sessionReport('session-a', home, runtimeRoot)).toContain('1 eligible build results');
 });
 
+it('does not reserve a paid request when the sandbox cannot read the Router caller capability', async () => {
+  const { home, mode, input } = await fixture();
+  await setSessionMode('session-a', mode, home);
+  expect(await processPostToolUse(input, { home })).toBeUndefined();
+  const allowance = new JevDurableCampaignAllowance(mode.ledgerPath, 1000, 900_000, 900);
+  expect(allowance.attemptedRequests).toBe(0);
+  expect(allowance.availableRequests).toBe(1000);
+});
+
 it('preserves failed, short, structured and secret-looking results', async () => {
   const { home, mode, input, ask } = await fixture();
   await setSessionMode('session-a', mode, home);

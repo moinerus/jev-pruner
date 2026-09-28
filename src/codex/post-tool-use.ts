@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from 'node:fs/promises';
+import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { JevAsker } from '../jev.js';
@@ -92,6 +92,19 @@ export async function processPostToolUse(input: PostToolUseInput, options: {
       afterEstimatedTokens: estimateTokens(result.output), calls: 0, latencyMs: 0,
     });
     return undefined;
+  }
+  if (!options.asker) {
+    try {
+      const caller = (await readFile(join(home, '.codex', 'codex-router', 'caller-secret'), 'utf8')).trim();
+      if (!/^[A-Za-z0-9_-]{32,}$/.test(caller)) throw new Error('Invalid Router caller capability');
+    } catch {
+      await recordMetric(input.session_id, runtimeRoot, {
+        beforeChars: result.output.length, afterChars: result.output.length,
+        beforeEstimatedTokens: estimateTokens(result.output),
+        afterEstimatedTokens: estimateTokens(result.output), calls: 0, latencyMs: 0,
+      });
+      return undefined;
+    }
   }
   const original = Buffer.from(result.output);
   const started = (options.now ?? Date.now)();

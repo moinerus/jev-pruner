@@ -153,6 +153,10 @@ hook wraps simple build, install and test commands in enabled sessions. The
 wrapper can replace successful long stdout before it reaches Codex. The
 `PostToolUse` hook records output sizes without making paid requests. Automatic
 pruning is off by default and requires an existing durable request ledger.
+In the managed Codex desktop sandbox, the current Router transport cannot read
+Router's caller capability from the wrapped command. Keep paid automatic mode
+off there until a scoped Router handoff is available. The command still runs and
+its original output is preserved.
 
 ### 1. Install Codex and sign in
 
@@ -331,9 +335,11 @@ fresh desktop session before enabling paid pruning. Some Codex builds have
 [silently ignored rewrites under managed permission profiles](https://github.com/openai/codex/issues/32544).
 Review and trust the changed `PreToolUse` hook in **Settings > Hooks > From
 Plugins** or with `/hooks` in the CLI. Changed hooks are skipped until trusted.
-The exact original is archived under `~/.cache/jev-pruner/codex/archives/`
-before any scoring request. The replacement contains omission markers and an
-archive path. A hook or archive failure leaves the original result unchanged.
+The exact original is archived under the session runtime's `archives/`
+directory before any scoring request. In managed desktop sessions this runtime
+is under the user's temporary directory. The replacement contains omission
+markers and an archive path. A hook or archive failure leaves the original
+result unchanged.
 
 Run these commands **inside each Codex session's shell**, replacing the path
 with the installed plugin root. The shell must have `CODEX_THREAD_ID`.
@@ -380,7 +386,9 @@ For a two-session comparison, use the same model, task, fixture and commands.
 Set the first session to `observe` and the second to `enable`. Record each
 session's `report`, actual Codex usage, task outcome and any archive recovery.
 Do not enable paid pruning until a live `PreToolUse` probe confirms that Codex
-ran the rewritten command and received its output, including in code mode.
+ran the rewritten command and received its output, including in code mode. In
+managed desktop sessions, also confirm that the wrapped command can reach its
+scoring transport. A successful rewrite alone does not prove Router access.
 
 ### Updating or removing the Codex plugin
 
