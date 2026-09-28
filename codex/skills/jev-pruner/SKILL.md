@@ -18,10 +18,11 @@ The `PreToolUse` hook wraps only simple, recognised build and test commands in
 enabled sessions. Its wrapper preserves exit status, stderr and the original
 stdout when pruning is unsafe or unavailable. The `PostToolUse` hook records
 baseline sizes only; it must not spend when Codex ignores a command rewrite.
-For automatic desktop pruning, the trusted hook signs a one-hour Jev-only
-ticket with Router's host-owned caller capability. The wrapped command reads
-that ticket from the user's temporary directory and calls only Router's scoped
-Jev Decisions endpoint. If ticket creation fails, the command runs unchanged.
+For automatic desktop pruning, the trusted hook requests a one-hour Jev-only
+ticket from Router's local loopback mint route. It never reads Router's broad
+caller capability. The wrapped command reads that ticket from the user's
+temporary directory and calls only Router's scoped Jev Decisions endpoint.
+If ticket creation fails, the command runs unchanged.
 Confirm Router supports the scoped endpoint before a paid live probe.
 In managed desktop sessions, use a private request ledger in a directory that
 the wrapped command can write. If that ledger disappears, scoring stops.

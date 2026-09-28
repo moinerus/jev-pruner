@@ -20,7 +20,7 @@ export interface ScopedCodexRouterAskerOptions extends Omit<CodexRouterAskerOpti
   readTicket?: () => Promise<string>;
 }
 
-function loopbackBaseUrl(value: string): string {
+export function loopbackBaseUrl(value: string): string {
   let url: URL;
   try {
     url = new URL(value);

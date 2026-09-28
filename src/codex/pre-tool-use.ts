@@ -24,6 +24,8 @@ export async function processPreToolUse(input: PreToolUseInput, options: {
   nodePath?: string;
   runPath?: string;
   ticketRoot?: string;
+  ticketBaseUrl?: string;
+  ticketFetch?: typeof globalThis.fetch;
 } = {}): Promise<{ hookSpecificOutput: {
   hookEventName: 'PreToolUse'; permissionDecision: 'allow';
   updatedInput: Record<string, unknown>;
@@ -40,7 +42,7 @@ export async function processPreToolUse(input: PreToolUseInput, options: {
   if (!mode || sessionAllowance(mode).availableRequests < 1) return undefined;
   let ticketPath: string;
   try { ticketPath = await createScopedJevTicket(input.session_id, {
-    home, ticketRoot: options.ticketRoot,
+    ticketRoot: options.ticketRoot, baseUrl: options.ticketBaseUrl, fetch: options.ticketFetch,
   }); }
   catch { return undefined; }
   const platform = options.platform ?? process.platform;
@@ -50,5 +52,5 @@ export async function processPreToolUse(input: PreToolUseInput, options: {
     '--', ...command.split(' ')];
   const rewritten = `${platform === 'win32' ? '& ' : ''}${parts.map(part => quote(part, platform)).join(' ')}`;
   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow',
-    updatedInput: { ...toolInput, [commandKey]: rewritten } } };
+    updatedInput: { ...toolInput, command: rewritten, [commandKey]: rewritten } } };
 }

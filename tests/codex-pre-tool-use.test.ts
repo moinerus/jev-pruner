@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -7,12 +7,20 @@ import { processPreToolUse } from '../src/codex/pre-tool-use.js';
 import { setSessionMode } from '../src/codex/session-mode.js';
 
 const homes: string[] = [];
+function issuedTicket(sessionId: string): string {
+  const now = Date.now();
+  const body = Buffer.from(JSON.stringify({ v: 1, scope: 'jev-decisions-v1', sessionId,
+    nonce: 'AAAAAAAAAAAAAAAAAAAAAA', issuedAt: now, expiresAt: now + 3_600_000,
+    maxCalls: 19 })).toString('base64url');
+  return `${body}.${'A'.repeat(43)}`;
+}
+const ticketFetch: typeof fetch = async (_input, init) => {
+  const { sessionId } = JSON.parse(String(init?.body));
+  return new Response(JSON.stringify({ ticket: issuedTicket(sessionId) }), { status: 200 });
+};
 async function fixture() {
   const home = await mkdtemp(join(tmpdir(), 'jev-pre-'));
   homes.push(home);
-  const callerDirectory = join(home, '.codex', 'codex-router');
-  await mkdir(callerDirectory, { recursive: true });
-  await writeFile(join(callerDirectory, 'caller-secret'), 'a'.repeat(48));
   const mode = { kind: 'key-capped-requests' as const,
     ledgerPath: join(home, 'requests.json'), maxRequests: 1000 };
   await JevDurableRequestAllowance.initialise(mode.ledgerPath, mode.maxRequests, 41);
@@ -31,7 +39,7 @@ it('rewrites only enabled, recognised simple commands and keeps the shared allow
     tool_input: { command: 'npm test', workdir: 'C:\\repo', yield_time_ms: 10000 } },
     { home, platform: 'win32',
     nodePath: 'C:\\node.exe', runPath: 'C:\\Jev Pruner\\run.js',
-    ticketRoot: join(home, 'tickets') });
+    ticketRoot: join(home, 'tickets'), ticketFetch });
   expect(decision?.hookSpecificOutput.permissionDecision).toBe('allow');
   expect(decision?.hookSpecificOutput.updatedInput.command).toContain(
     "& 'C:\\node.exe' 'C:\\Jev Pruner\\run.js' '--auto-session' 'session-a' '--ticket-file'");
@@ -41,14 +49,14 @@ it('rewrites only enabled, recognised simple commands and keeps the shared allow
   const nodeTest = await processPreToolUse({ ...input,
     tool_input: { command: 'node --test test.test.mjs' } }, { home, platform: 'win32',
     nodePath: 'C:\\node.exe', runPath: 'C:\\Jev Pruner\\run.js',
-    ticketRoot: join(home, 'tickets') });
+    ticketRoot: join(home, 'tickets'), ticketFetch });
   expect(nodeTest?.hookSpecificOutput.updatedInput.command).toContain("'node' '--test' 'test.test.mjs'");
   const desktopCommand = await processPreToolUse({ ...input,
     tool_input: { cmd: 'npm test', workdir: 'C:\\repo' } }, { home, platform: 'win32',
     nodePath: 'C:\\node.exe', runPath: 'C:\\Jev Pruner\\run.js',
-    ticketRoot: join(home, 'tickets') });
+    ticketRoot: join(home, 'tickets'), ticketFetch });
   expect(desktopCommand?.hookSpecificOutput.updatedInput.cmd).toContain("'--' 'npm' 'test'");
-  expect(desktopCommand?.hookSpecificOutput.updatedInput.command).toBeUndefined();
+  expect(desktopCommand?.hookSpecificOutput.updatedInput.command).toContain("'--' 'npm' 'test'");
   expect(desktopCommand?.hookSpecificOutput.updatedInput.workdir).toBe('C:\\repo');
   expect(new JevDurableRequestAllowance(mode.ledgerPath, 1000).attemptedRequests).toBe(41);
   expect(await processPreToolUse({ ...input, session_id: 'session-b' }, { home })).toBeUndefined();

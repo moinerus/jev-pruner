@@ -1,7 +1,8 @@
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, unlink } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { mkdir, open, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { loopbackBaseUrl } from './router-asker.js';
 
 export function validScopedTicketFile(sessionId: string, candidate: unknown): candidate is string {
   if (!/^[A-Za-z0-9-]{1,128}$/.test(sessionId) ||
@@ -13,30 +14,49 @@ export function validScopedTicketFile(sessionId: string, candidate: unknown): ca
 }
 
 export async function createScopedJevTicket(sessionId: string, options: {
-  home?: string;
   ticketRoot?: string;
+  baseUrl?: string;
+  fetch?: typeof globalThis.fetch;
   now?: () => number;
-  nonce?: () => Buffer;
 } = {}): Promise<string> {
   if (!/^[A-Za-z0-9-]{1,128}$/.test(sessionId)) throw new Error('Invalid Codex session id');
-  const home = options.home ?? homedir();
-  const secret = (await readFile(join(home, '.codex', 'codex-router', 'caller-secret'), 'utf8')).trim();
-  if (!/^[A-Za-z0-9_-]{32,}$/.test(secret)) throw new Error('Invalid Router caller capability');
   const now = (options.now ?? Date.now)();
-  const random = (options.nonce ?? (() => randomBytes(16)))();
-  if (!Number.isSafeInteger(now) || !Buffer.isBuffer(random) || random.length !== 16) {
-    throw new Error('Invalid Jev ticket clock or nonce');
+  if (!Number.isSafeInteger(now)) throw new Error('Invalid Jev ticket clock');
+  const baseUrl = loopbackBaseUrl(options.baseUrl ?? 'http://127.0.0.1:4202');
+  const response = await (options.fetch ?? globalThis.fetch)(`${baseUrl}/v1/jev-ticket`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-jev-pruner': 'ticket-v1' },
+    body: JSON.stringify({ sessionId }),
+    signal: AbortSignal.timeout(2_000),
+    redirect: 'error',
+  });
+  if (!response.ok) throw new Error('Router did not issue a Jev ticket');
+  const responseBody = await response.text();
+  if (responseBody.length > 2_048) throw new Error('Invalid Router Jev ticket');
+  const issued = JSON.parse(responseBody) as { ticket?: unknown };
+  const token = issued?.ticket;
+  if (typeof token !== 'string' || token.length > 1024 ||
+      !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(token)) {
+    throw new Error('Invalid Router Jev ticket');
   }
-  const payload = { v: 1, scope: 'jev-decisions-v1', sessionId,
-    nonce: random.toString('base64url'), issuedAt: now,
-    expiresAt: now + 60 * 60 * 1000, maxCalls: 19 };
-  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
-  const signature = createHmac('sha256', secret).update(body).digest('base64url');
+  let payload: Record<string, unknown>;
+  try { payload = JSON.parse(Buffer.from(token.split('.')[0]!, 'base64url').toString('utf8')) as Record<string, unknown>; }
+  catch { throw new Error('Invalid Router Jev ticket'); }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+      Object.keys(payload).sort().join(',') !==
+        'expiresAt,issuedAt,maxCalls,nonce,scope,sessionId,v' ||
+      payload.v !== 1 || payload.scope !== 'jev-decisions-v1' ||
+      payload.sessionId !== sessionId || !Number.isSafeInteger(payload.issuedAt) ||
+      !/^[A-Za-z0-9_-]{22,44}$/.test(String(payload.nonce)) ||
+      !Number.isSafeInteger(payload.expiresAt) || Number(payload.issuedAt) > now + 30_000 ||
+      Number(payload.expiresAt) <= now ||
+      Number(payload.expiresAt) - Number(payload.issuedAt) > 3_600_000 ||
+      payload.maxCalls !== 19) throw new Error('Invalid Router Jev ticket');
   const ticketRoot = options.ticketRoot ?? join(tmpdir(), 'jev-pruner', 'tickets');
   await mkdir(ticketRoot, { recursive: true, mode: 0o700 });
   const path = join(ticketRoot, `${sessionId}-${randomUUID()}.ticket`);
   const handle = await open(path, 'wx', 0o600);
-  try { await handle.writeFile(`${body}.${signature}\n`); await handle.sync(); }
+  try { await handle.writeFile(`${token}\n`); await handle.sync(); }
   catch (error) { await handle.close(); await unlink(path).catch(() => {}); throw error; }
   await handle.close();
   return path;

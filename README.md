@@ -333,9 +333,10 @@ reads the Codex transcript. Failed, short, structured, secret-looking and
 unrecognised output stays unchanged. The threshold is 4,000 estimated tokens.
 This includes `node --test` and a single test file, so Node's built-in test
 runner works without a package-manager launcher.
-The trusted hook reads Router's caller capability on the host, signs a ticket
-valid for one hour and up to 19 Jev requests, then places it in the user's
-temporary directory. The rewritten command receives only the ticket file path.
+The trusted hook asks local Router for a ticket valid for one hour and up to
+19 Jev requests, then places it in the user's temporary directory. The hook
+does not read Router's broad caller capability. The rewritten command receives
+only the ticket file path.
 Router accepts the ticket solely on `POST /v1/jev-decisions` for the pinned Jev
 campaign model. The wrapper removes the file after the command. Router keeps
 the provider key, and an expired or invalid ticket preserves stdout.
