@@ -1,6 +1,6 @@
 {
   "name": "jev-pruner",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Opt-in Jev pruning for non-interactive shell commands.",
   "skills": "./codex/skills",
   "hooks": "./codex/hooks.json"
