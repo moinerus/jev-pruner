@@ -104,6 +104,38 @@ it('records an unpruned baseline without a Jev call or output text', async () =>
   expect(report).not.toContain('cache hit');
 });
 
+it('records an unpruned baseline from the string output sent by Codex unified exec', async () => {
+  const { home, input, ask } = await fixture();
+  await observeSession('session-a', home);
+  expect(await processPostToolUse({ ...input, tool_response: log }, { home, asker: { ask } })).toBeUndefined();
+  expect(ask).not.toHaveBeenCalled();
+  expect(await sessionReport('session-a', home)).toContain('1 eligible build results; 0 Jev calls');
+});
+
+it('only prunes a Codex string result with a clear successful test summary', async () => {
+  const { home, mode, input, ask } = await fixture();
+  await setSessionMode('session-a', mode, home);
+  const options = { home, asker: { ask } };
+  expect(await processPostToolUse({ ...input, tool_response: `${log}ERROR: test runner crashed\n` }, options)).toBeUndefined();
+  expect(await processPostToolUse({ ...input, tool_response: `Warning: truncated output (original token count: 30000)\n${log}` }, options)).toBeUndefined();
+  expect(ask).not.toHaveBeenCalled();
+  const decision = await processPostToolUse({ ...input, tool_response: log }, options);
+  expect(ask).toHaveBeenCalled();
+  expect(decision?.continue).toBe(false);
+});
+
+it('can prune a complete build result below the Codex default output limit', async () => {
+  const { home, mode, input, ask } = await fixture();
+  const mediumLog = `${'cache hit already current\n'.repeat(900)}Tests: 20 passed\n`;
+  expect(estimateTokens(mediumLog)).toBeGreaterThan(4_000);
+  expect(estimateTokens(mediumLog)).toBeLessThan(10_000);
+  await setSessionMode('session-a', mode, home);
+  const decision = await processPostToolUse({ ...input, tool_response: mediumLog },
+    { home, asker: { ask } });
+  expect(ask).toHaveBeenCalled();
+  expect(decision?.continue).toBe(false);
+});
+
 it('uses the provider-capped request ledger for a paid session', async () => {
   const { home, input, ask } = await fixture();
   const ledgerPath = join(home, 'key-capped.json');

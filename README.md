@@ -319,8 +319,12 @@ the absence of an error does not.
 The installed plugin's `PostToolUse` hook checks each supported Bash result,
 but does nothing until the current session is enabled. It never reads the
 Codex transcript. It sends only a fixed short goal and bounded chunks of the
-current output to the Router Decisions route. It leaves short, failed,
-structured, secret-looking, interactive and unrecognised output unchanged.
+current output to the Router Decisions route. Codex supplies model-visible
+output text without an exit code, so the hook only considers build and test
+logs with a clear success summary and no error or warning markers. Short,
+structured, secret-looking, interactive and unrecognised output stays unchanged.
+The hook needs more than 4,000 estimated tokens of complete output. It cannot
+recover content already cut off by `max_output_tokens` or Codex's host limit.
 After installing or updating the plugin, review and trust its `PostToolUse`
 definition in **Settings > Hooks > From Plugins** in the desktop app, or with
 `/hooks` in the CLI. Changed hooks are skipped until their new definition is

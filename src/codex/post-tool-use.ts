@@ -18,14 +18,22 @@ type PostToolUseInput = {
   tool_response?: unknown;
 };
 
-type BashResult = { output: string; exit_code: number };
+type BashResult = { output: string; confirmedExit: boolean };
+const HOOK_MIN_OUTPUT_TOKENS = 4_000;
 
 function bashResult(value: unknown): BashResult | undefined {
+  if (typeof value === 'string') return { output: value, confirmedExit: false };
   if (!value || typeof value !== 'object') return undefined;
   const result = value as Record<string, unknown>;
   if (typeof result.output !== 'string' || result.exit_code !== 0 ||
       result.session_id !== undefined || result.isError === true) return undefined;
-  return { output: result.output, exit_code: result.exit_code };
+  return { output: result.output, confirmedExit: true };
+}
+
+function clearlySucceeded(output: string): boolean {
+  if (/\b(?:errors?|warnings?|failed|failures?|blocked)\b/i.test(output)) return false;
+  return /\btests?:?\s+\d+\s+passed\b|\bbuild (?:succeeded|successful|completed successfully)\b|\bbuilt in \d+(?:\.\d+)?\s*(?:ms|s)\b/i
+    .test(output.slice(-2_000));
 }
 
 function commandInput(value: unknown): string | undefined {
@@ -57,9 +65,12 @@ export async function processPostToolUse(input: PostToolUseInput, options: {
       typeof input.session_id !== 'string' || typeof input.cwd !== 'string') return undefined;
   const command = commandInput(input.tool_input);
   const result = bashResult(input.tool_response);
-  if (!command || !result || result.output.length > 8 * 1024 * 1024 ||
-      !exceedsOutputThreshold(result.output) || classifyOutput(command, result.output) !== 'build' ||
-      looksSecret(command, result.output) || /(?:truncated|output cut off)/i.test(result.output.slice(-500))) return undefined;
+  if (!command || !result || (!result.confirmedExit && !clearlySucceeded(result.output)) ||
+      result.output.length > 8 * 1024 * 1024 ||
+      !exceedsOutputThreshold(result.output, HOOK_MIN_OUTPUT_TOKENS, HOOK_MIN_OUTPUT_TOKENS) ||
+      classifyOutput(command, result.output) !== 'build' ||
+      looksSecret(command, result.output) ||
+      /(?:truncated|output cut off)/i.test(result.output.slice(0, 500) + result.output.slice(-500))) return undefined;
   const home = options.home ?? homedir();
   const mode = await readSessionMode(input.session_id, home);
   if (!mode) {
@@ -94,6 +105,8 @@ export async function processPostToolUse(input: PostToolUseInput, options: {
     maxScoringRequests: 19,
     maxChars: 7_000,
     maxStateTokens: 2_000,
+    minTokens: HOOK_MIN_OUTPUT_TOKENS,
+    minTokenFloor: HOOK_MIN_OUTPUT_TOKENS,
   });
   const replacement = displayed.toString('utf8');
   const replaced = !displayed.equals(original) &&
