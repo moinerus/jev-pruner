@@ -323,6 +323,8 @@ preserves its exit status and stderr, and checks complete stdout. Successful
 eligible output is scored with a fixed short goal and bounded chunks. It never
 reads the Codex transcript. Failed, short, structured, secret-looking and
 unrecognised output stays unchanged. The threshold is 4,000 estimated tokens.
+This includes `node --test` and a single test file, so Node's built-in test
+runner works without a package-manager launcher.
 The `PostToolUse` hook records baseline sizes only, so an ignored rewrite cannot
 spend requests while showing the full original result. Check the wrapper in a
 fresh desktop session before enabling paid pruning. Some Codex builds have

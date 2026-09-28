@@ -139,6 +139,7 @@ export function classifyOutput(command: string, output: string): OutputCategory 
   const simple = simpleCommand(command);
   if (/^(rg|grep|egrep|fgrep|find|fd|head|tail|sed|git\s+grep)(?:\s|$)/.test(simple)) return 'search';
   if (/^(make|gmake|ninja|pytest|jest|vitest|ctest|mvn|gradle|gradlew)(?:\s|$)/.test(simple) ||
+      /^node\s+--test(?:\s|$)/.test(simple) ||
       /^(npm|pnpm|yarn|bun)\s+(?:(?:run\s+)?(?:build|test|lint|typecheck|check)(?::[\w-]+)*|install|ci|add)(?:\s|$)/.test(simple) ||
       /^(cargo|go)\s+(build|test|check|clippy|install)(?:\s|$)/.test(simple) ||
       /^cmake\s+--build(?:\s|$)/.test(simple) ||

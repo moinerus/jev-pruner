@@ -9,7 +9,7 @@ type PreToolUseInput = {
   tool_input?: unknown;
 };
 
-const SIMPLE_BUILD = /^(?:(?:npm|pnpm|yarn|bun) (?:test|run (?:build|test|lint|typecheck|check)(?::[\w-]+)?|install|ci)|(?:cargo|go) (?:build|test|check)|(?:pytest|vitest|jest|make|ninja))$/;
+const SIMPLE_BUILD = /^(?:(?:npm|pnpm|yarn|bun) (?:test|run (?:build|test|lint|typecheck|check)(?::[\w-]+)?|install|ci)|(?:cargo|go) (?:build|test|check)|node --test(?: [A-Za-z0-9_./-]+)?|(?:pytest|vitest|jest|make|ninja))$/;
 
 function quote(value: string, platform: string): string {
   return platform === 'win32'

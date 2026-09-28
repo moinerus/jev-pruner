@@ -33,6 +33,10 @@ it('rewrites only enabled, recognised simple commands and keeps the shared allow
     "& 'C:\\node.exe' 'C:\\Jev Pruner\\run.js' '--auto-session' 'session-a' '--' 'npm' 'test'");
   expect(decision?.hookSpecificOutput.updatedInput.workdir).toBe('C:\\repo');
   expect(decision?.hookSpecificOutput.updatedInput.yield_time_ms).toBe(10000);
+  const nodeTest = await processPreToolUse({ ...input,
+    tool_input: { command: 'node --test test.test.mjs' } }, { home, platform: 'win32',
+    nodePath: 'C:\\node.exe', runPath: 'C:\\Jev Pruner\\run.js' });
+  expect(nodeTest?.hookSpecificOutput.updatedInput.command).toContain("'node' '--test' 'test.test.mjs'");
   expect(new JevDurableRequestAllowance(mode.ledgerPath, 1000).attemptedRequests).toBe(41);
   expect(await processPreToolUse({ ...input, session_id: 'session-b' }, { home })).toBeUndefined();
 });
