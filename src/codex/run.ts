@@ -1,20 +1,26 @@
 import { spawn } from 'node:child_process';
+import { unlink } from 'node:fs/promises';
 import { pruneCodexOutput } from './prune.js';
-import { createCodexRouterAsker } from './router-asker.js';
+import { createCodexRouterAsker, createScopedCodexRouterAsker } from './router-asker.js';
 import { campaignFromEnvironment } from './campaign.js';
 import { processPostToolUse } from './post-tool-use.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { validScopedTicketFile } from './scoped-ticket.js';
 
 const args = process.argv.slice(2);
 const requireCampaign = args[0] === '--require-campaign';
 const autoSession = args[0] === '--auto-session' ? args[1] : undefined;
-const campaignArgs = requireCampaign ? args.slice(1) : autoSession ? args.slice(2) : args;
+const hasTicketFlag = Boolean(autoSession && args[2] === '--ticket-file');
+const ticketFile = hasTicketFlag &&
+  validScopedTicketFile(autoSession ?? '', args[3]) ? args[3] : undefined;
+const campaignArgs = requireCampaign ? args.slice(1) : autoSession
+  ? args.slice(hasTicketFlag ? 4 : 2) : args;
 const hasGoalFlag = requireCampaign && campaignArgs[0] === '--goal';
 const goal = hasGoalFlag && campaignArgs[1] !== '--' ? campaignArgs[1] : undefined;
 const commandArgs = hasGoalFlag ? campaignArgs.slice(goal === undefined ? 1 : 2) : campaignArgs;
 if (commandArgs[0] !== '--' || commandArgs.length < 2) {
-  process.stderr.write('Usage: node run.js [--require-campaign --goal "short task goal" | --auto-session <id>] -- <executable> [arguments...]\n');
+  process.stderr.write('Usage: node run.js [--require-campaign --goal "short task goal" | --auto-session <id> --ticket-file <path>] -- <executable> [arguments...]\n');
   process.exitCode = 2;
 } else {
   const [command, ...parameters] = commandArgs.slice(1);
@@ -57,13 +63,17 @@ if (commandArgs[0] !== '--' || commandArgs.length < 2) {
       const output = Buffer.concat(buffers);
       const campaign = campaignFromEnvironment(process.env, requireCampaign);
       let displayed: Buffer = output;
-      if (code === 0 && !signal && autoSession && output.equals(Buffer.from(output.toString('utf8')))) {
+      if (code === 0 && !signal && autoSession && ticketFile &&
+          output.equals(Buffer.from(output.toString('utf8')))) {
         try {
           const decision = await processPostToolUse({
             hook_event_name: 'PostToolUse', tool_name: 'Bash', session_id: autoSession,
             cwd: process.cwd(), tool_input: { command: [command, ...parameters].join(' ') },
             tool_response: { output: output.toString('utf8'), exit_code: 0 },
-          }, { runtimeRoot: join(tmpdir(), 'jev-pruner', 'codex') });
+          }, { runtimeRoot: join(tmpdir(), 'jev-pruner', 'codex'),
+            asker: createScopedCodexRouterAsker({ ticketFile,
+              baseUrl: process.env.JEV_PRUNER_CODEX_ROUTER_BASE_URL,
+              signal: controller.signal }) });
           if (decision) displayed = Buffer.from(decision.stopReason);
         } catch { /* The original output remains available. */ }
       } else if (code === 0 && !signal && !autoSession) {
@@ -85,6 +95,7 @@ if (commandArgs[0] !== '--' || commandArgs.length < 2) {
       }
       await new Promise<void>(resolve => process.stdout.write(displayed, () => resolve()));
     }
+    if (ticketFile) await unlink(ticketFile).catch(() => {});
     await new Promise<void>(resolve => process.stdout.write('', () => resolve()));
     process.removeListener('SIGINT', forwardInt);
     process.removeListener('SIGTERM', forwardTerm);

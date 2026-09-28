@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { readSessionMode, sessionAllowance } from './session-mode.js';
+import { createScopedJevTicket } from './scoped-ticket.js';
 
 type PreToolUseInput = {
   hook_event_name?: unknown;
@@ -22,6 +23,7 @@ export async function processPreToolUse(input: PreToolUseInput, options: {
   platform?: string;
   nodePath?: string;
   runPath?: string;
+  ticketRoot?: string;
 } = {}): Promise<{ hookSpecificOutput: {
   hookEventName: 'PreToolUse'; permissionDecision: 'allow';
   updatedInput: Record<string, unknown> & { command: string };
@@ -35,10 +37,16 @@ export async function processPreToolUse(input: PreToolUseInput, options: {
   const home = options.home ?? homedir();
   const mode = await readSessionMode(input.session_id, home);
   if (!mode || sessionAllowance(mode).availableRequests < 1) return undefined;
+  let ticketPath: string;
+  try { ticketPath = await createScopedJevTicket(input.session_id, {
+    home, ticketRoot: options.ticketRoot,
+  }); }
+  catch { return undefined; }
   const platform = options.platform ?? process.platform;
   const parts = [options.nodePath ?? process.execPath,
     options.runPath ?? fileURLToPath(new URL('./run.js', import.meta.url)),
-    '--auto-session', input.session_id, '--', ...command.split(' ')];
+    '--auto-session', input.session_id, '--ticket-file', ticketPath,
+    '--', ...command.split(' ')];
   const rewritten = `${platform === 'win32' ? '& ' : ''}${parts.map(part => quote(part, platform)).join(' ')}`;
   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow',
     updatedInput: { ...toolInput, command: rewritten } } };

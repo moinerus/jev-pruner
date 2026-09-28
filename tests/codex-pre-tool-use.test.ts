@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -10,6 +10,9 @@ const homes: string[] = [];
 async function fixture() {
   const home = await mkdtemp(join(tmpdir(), 'jev-pre-'));
   homes.push(home);
+  const callerDirectory = join(home, '.codex', 'codex-router');
+  await mkdir(callerDirectory, { recursive: true });
+  await writeFile(join(callerDirectory, 'caller-secret'), 'a'.repeat(48));
   const mode = { kind: 'key-capped-requests' as const,
     ledgerPath: join(home, 'requests.json'), maxRequests: 1000 };
   await JevDurableRequestAllowance.initialise(mode.ledgerPath, mode.maxRequests, 41);
@@ -27,15 +30,18 @@ it('rewrites only enabled, recognised simple commands and keeps the shared allow
   const decision = await processPreToolUse({ ...input,
     tool_input: { command: 'npm test', workdir: 'C:\\repo', yield_time_ms: 10000 } },
     { home, platform: 'win32',
-    nodePath: 'C:\\node.exe', runPath: 'C:\\Jev Pruner\\run.js' });
+    nodePath: 'C:\\node.exe', runPath: 'C:\\Jev Pruner\\run.js',
+    ticketRoot: join(home, 'tickets') });
   expect(decision?.hookSpecificOutput.permissionDecision).toBe('allow');
-  expect(decision?.hookSpecificOutput.updatedInput.command).toBe(
-    "& 'C:\\node.exe' 'C:\\Jev Pruner\\run.js' '--auto-session' 'session-a' '--' 'npm' 'test'");
+  expect(decision?.hookSpecificOutput.updatedInput.command).toContain(
+    "& 'C:\\node.exe' 'C:\\Jev Pruner\\run.js' '--auto-session' 'session-a' '--ticket-file'");
+  expect(decision?.hookSpecificOutput.updatedInput.command).toContain("'--' 'npm' 'test'");
   expect(decision?.hookSpecificOutput.updatedInput.workdir).toBe('C:\\repo');
   expect(decision?.hookSpecificOutput.updatedInput.yield_time_ms).toBe(10000);
   const nodeTest = await processPreToolUse({ ...input,
     tool_input: { command: 'node --test test.test.mjs' } }, { home, platform: 'win32',
-    nodePath: 'C:\\node.exe', runPath: 'C:\\Jev Pruner\\run.js' });
+    nodePath: 'C:\\node.exe', runPath: 'C:\\Jev Pruner\\run.js',
+    ticketRoot: join(home, 'tickets') });
   expect(nodeTest?.hookSpecificOutput.updatedInput.command).toContain("'node' '--test' 'test.test.mjs'");
   expect(new JevDurableRequestAllowance(mode.ledgerPath, 1000).attemptedRequests).toBe(41);
   expect(await processPreToolUse({ ...input, session_id: 'session-b' }, { home })).toBeUndefined();

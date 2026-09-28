@@ -18,6 +18,11 @@ The `PreToolUse` hook wraps only simple, recognised build and test commands in
 enabled sessions. Its wrapper preserves exit status, stderr and the original
 stdout when pruning is unsafe or unavailable. The `PostToolUse` hook records
 baseline sizes only; it must not spend when Codex ignores a command rewrite.
+For automatic desktop pruning, the trusted hook signs a one-hour Jev-only
+ticket with Router's host-owned caller capability. The wrapped command reads
+that ticket from the user's temporary directory and calls only Router's scoped
+Jev Decisions endpoint. If ticket creation fails, the command runs unchanged.
+Confirm Router supports the scoped endpoint before a paid live probe.
 In managed desktop sessions, use a private request ledger in a directory that
 the wrapped command can write. If that ledger disappears, scoring stops.
 Run `report` to see local output-size estimates, then compare those with actual
@@ -53,9 +58,10 @@ Only stdout over 10,000 estimated tokens is eligible. In campaign mode, the
 wrapper sends the short goal and bounded command-output chunks to Jev. It does
 not read or send the Codex transcript. Missing or invalid goals return the
 original stdout without a scoring request.
-Set `JEV_PRUNER_TRANSPORT=codex-router` for the local Router transport. It reads
-the host-owned caller capability at runtime; do not copy a provider key into
-the plugin. Missing transport access, failed commands, archive
+Set `JEV_PRUNER_TRANSPORT=codex-router` for explicit wrapper calls outside the
+managed desktop sandbox. That older path reads the host-owned caller capability
+at runtime. Automatic desktop calls use the scoped ticket instead. Keep the
+provider key with Router. Missing transport access, failed commands, archive
 failures, and scoring failures return the original stdout.
 Never claim pruning occurred without seeing an omission marker.
 

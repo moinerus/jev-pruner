@@ -153,10 +153,11 @@ hook wraps simple build, install and test commands in enabled sessions. The
 wrapper can replace successful long stdout before it reaches Codex. The
 `PostToolUse` hook records output sizes without making paid requests. Automatic
 pruning is off by default and requires an existing durable request ledger.
-In the managed Codex desktop sandbox, the current Router transport cannot read
-Router's caller capability from the wrapped command. Keep paid automatic mode
-off there until a scoped Router handoff is available. The command still runs and
-its original output is preserved.
+The managed Codex desktop sandbox cannot read Router's host-owned caller
+capability. The trusted `PreToolUse` hook now signs a short-lived, Jev-only
+ticket for the wrapped command. Automatic paid mode requires a Router build
+with the matching scoped endpoint and a successful live probe. Until then the
+command runs with its original output.
 
 ### 1. Install Codex and sign in
 
@@ -179,12 +180,15 @@ still use the explicit wrapper.
 
 ### 2. Configure a Jev transport
 
-Choose one transport for the shell session that launches Codex:
+Choose one transport for explicit wrapper calls. Automatic desktop sessions use
+the scoped Codex Router route regardless of this setting:
 
 - **TypeSafe direct (default):** set `TYPESAFE_API_KEY` as described below.
 - **Codex Router:** set `JEV_PRUNER_TRANSPORT=codex-router`. This uses a local
   Codex Router with its OpenRouter Decisions route and its host-owned caller
-  capability. The wrapper never reads an OpenRouter API key. Set
+  capability for explicit wrapper calls. Automatic desktop sessions use a
+  Jev-only ticket from the trusted hook instead. The wrapper never reads an
+  OpenRouter API key. Set
   `JEV_PRUNER_CODEX_ROUTER_BASE_URL` only when your router is not running at
   `http://127.0.0.1:4202`.
 
@@ -329,6 +333,12 @@ reads the Codex transcript. Failed, short, structured, secret-looking and
 unrecognised output stays unchanged. The threshold is 4,000 estimated tokens.
 This includes `node --test` and a single test file, so Node's built-in test
 runner works without a package-manager launcher.
+The trusted hook reads Router's caller capability on the host, signs a ticket
+valid for one hour and up to 19 Jev requests, then places it in the user's
+temporary directory. The rewritten command receives only the ticket file path.
+Router accepts the ticket solely on `POST /v1/jev-decisions` for the pinned Jev
+campaign model. The wrapper removes the file after the command. Router keeps
+the provider key, and an expired or invalid ticket preserves stdout.
 The `PostToolUse` hook records baseline sizes only, so an ignored rewrite cannot
 spend requests while showing the full original result. Check the wrapper in a
 fresh desktop session before enabling paid pruning. Some Codex builds have
