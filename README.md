@@ -162,6 +162,7 @@ These terminal commands use Bash or Zsh on macOS/Linux. Install
 
 ```sh
 npm install -g @openai/codex
+node --version
 codex --version
 codex login
 codex login status
@@ -238,6 +239,8 @@ the app and confirm the installed copy's `codex/hooks.json` includes
 `PostToolUse`. Then review the new hook in **Settings > Hooks > From Plugins**.
 The old `PreToolUse` entry alone means the automatic pruning hook is not
 installed. A project-local `.codex/hooks.json` is not part of this install.
+The hook command invokes `node`, so check that Node.js 18 or newer is available
+to the desktop app before relying on hook execution.
 
 ### 4. Start Codex and trust the hook
 
