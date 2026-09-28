@@ -7,6 +7,7 @@ import { estimateTokens } from '../src/jev.js';
 import { classifyOutput } from '../src/output.js';
 import { looksSecret } from '../src/secrets.js';
 import { JevDurableCampaignAllowance } from '../src/codex/durable-campaign-allowance.js';
+import { JevDurableRequestAllowance } from '../src/codex/durable-request-allowance.js';
 import { processPostToolUse } from '../src/codex/post-tool-use.js';
 import { observeSession, readSessionMode, setSessionMode } from '../src/codex/session-mode.js';
 import { sessionReport } from '../src/codex/session-report.js';
@@ -101,4 +102,14 @@ it('records an unpruned baseline without a Jev call or output text', async () =>
   expect(report).toContain('1 eligible build results; 0 Jev calls');
   expect(report).toContain('Estimates are not measured Codex context usage');
   expect(report).not.toContain('cache hit');
+});
+
+it('uses the provider-capped request ledger for a paid session', async () => {
+  const { home, input, ask } = await fixture();
+  const ledgerPath = join(home, 'key-capped.json');
+  await JevDurableRequestAllowance.initialise(ledgerPath, 1000, 31);
+  await setSessionMode('session-a', { kind: 'key-capped-requests', ledgerPath, maxRequests: 1000 }, home);
+  const decision = await processPostToolUse(input, { home, asker: { ask } });
+  expect(decision?.stopReason).toContain('trimmed');
+  expect(new JevDurableRequestAllowance(ledgerPath, 1000).attemptedRequests).toBeGreaterThan(31);
 });

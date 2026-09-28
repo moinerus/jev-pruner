@@ -150,7 +150,7 @@ without logging the output text.
 
 Codex has an explicit command wrapper and a session-scoped `PostToolUse` hook.
 The hook is off by default. It only considers successful, long build, install
-and test output, and requires an existing durable paid campaign. The wrapper
+and test output, and requires an existing durable request ledger. The wrapper
 remains available on older Codex versions. The optional `PreToolUse` hook
 records a transcript pointer only for the older unmarked wrapper route.
 
@@ -310,14 +310,20 @@ but does nothing until the current session is enabled. It never reads the
 Codex transcript. It sends only a fixed short goal and bounded chunks of the
 current output to the Router Decisions route. It leaves short, failed,
 structured, secret-looking, interactive and unrecognised output unchanged.
+After installing or updating the plugin, review and trust its `PostToolUse`
+definition through `/hooks` in Codex. Changed hooks are skipped until their
+new definition is trusted. Project-local hooks also require a trusted project
+`.codex/` layer. Check hook execution with a harmless synthetic result before
+enabling paid pruning.
 The exact original is archived under `~/.cache/jev-pruner/codex/archives/`
 before any scoring request. The replacement contains omission markers and an
 archive path. A hook or archive failure leaves the original result unchanged.
 
 Run these commands **inside each Codex session's shell**, replacing the path
 with the installed plugin root. The shell must have `CODEX_THREAD_ID`.
-`enable` takes the path and exact limits of an **existing** campaign ledger;
-it will not create or reset one. The example placeholders are intentional:
+For a route with an enforced per-call cost ceiling, `enable` takes an
+**existing** campaign ledger and its exact limits. It will not create or reset
+one. The example placeholders are intentional:
 
 ```sh
 node "<installed-plugin-root>/dist/codex/session.js" observe
@@ -327,8 +333,24 @@ node "<installed-plugin-root>/dist/codex/session.js" report
 node "<installed-plugin-root>/dist/codex/session.js" disable
 ```
 
+If the provider key has a verified lifetime dollar limit but the route has no
+per-call cost ceiling, use the request-count ledger instead. Check the key's
+limit and its earlier request count in the provider UI first. Initialise the
+ledger once, then enable only the sessions chosen for pruning:
+
+```sh
+node "<installed-plugin-root>/dist/codex/session.js" initialise-key-cap "<private-ledger.json>" <total-request-limit> <earlier-provider-requests>
+node "<installed-plugin-root>/dist/codex/session.js" enable-key-cap "<private-ledger.json>" <total-request-limit>
+```
+
+The ledger counts each dispatch before the call and fails closed if it is
+missing, changed, locked or uncertain. It does not enforce dollars. The
+provider key limit is the dollar stop. Keep the ledger outside a repository
+and do not reinitialise it to regain calls.
+
 `observe` is a baseline mode. It records sizes for eligible results without
-altering output or calling Jev. `enable` selects pruning for that session.
+altering output or calling Jev. `enable` and `enable-key-cap` select pruning
+for that session.
 Both modes write only counts and timing under
 `~/.cache/jev-pruner/codex/metrics/`, with no command, output, prompt or
 transcript text. `report` shows estimated output tokens, not measured Codex
@@ -366,6 +388,7 @@ in the projects where the commands ran.
 | The skill is unavailable | Check `codex plugin list --json`, then start a new session after installation. |
 | `dist/codex/run.js` cannot be found | Run `npm ci` and `npm run build` in the checkout, then remove and reinstall the cached plugin as above. |
 | Large output is unchanged | Confirm Codex used the wrapper, the command succeeded, and the output is eligible. For `--require-campaign`, check the short goal and ledger settings. For the older unmarked route, check that the hook is trusted. In direct mode check the API key, Jev network access, and TypeSafe credits. In router mode check the local router and its OpenRouter Decisions route. Missing access or scoring failures preserve stdout. |
+| Automatic session pruning never runs | Start a fresh session after installation, review the `PostToolUse` hook in `/hooks`, check `session.js status`, and run a harmless synthetic replacement probe. If the hook never fires, leave paid mode off. |
 | Jev returns HTTP 402 | Add TypeSafe API credits. Your Codex subscription does not fund Jev requests. |
 | Codex reports output truncation | Use the larger `tool_output_token_limit` shown above and read the original archive when available. This limit is separate from the pruning threshold. |
 

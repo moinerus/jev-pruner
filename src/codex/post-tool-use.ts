@@ -5,10 +5,9 @@ import type { JevAsker } from '../jev.js';
 import { estimateTokens } from '../jev.js';
 import { classifyOutput, exceedsOutputThreshold } from '../output.js';
 import { looksSecret } from '../secrets.js';
-import { JevDurableCampaignAllowance } from './durable-campaign-allowance.js';
 import { pruneCodexOutput } from './prune.js';
 import { createCodexRouterAsker } from './router-asker.js';
-import { isSessionObserving, readSessionMode } from './session-mode.js';
+import { isSessionObserving, readSessionMode, sessionAllowance } from './session-mode.js';
 
 type PostToolUseInput = {
   hook_event_name?: unknown;
@@ -71,8 +70,7 @@ export async function processPostToolUse(input: PostToolUseInput, options: {
     });
     return undefined;
   }
-  const allowance = new JevDurableCampaignAllowance(mode.ledgerPath, mode.maxRequests,
-    mode.maxReservedMicroUsd, mode.perRequestCeilingMicroUsd);
+  const allowance = sessionAllowance(mode);
   if (allowance.availableRequests < 1) {
     await recordMetric(input.session_id, home, {
       beforeChars: result.output.length, afterChars: result.output.length,

@@ -3,12 +3,28 @@ import { readFile, mkdir, open, rename, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { JevDurableCampaignAllowance } from './durable-campaign-allowance.js';
+import { JevDurableRequestAllowance } from './durable-request-allowance.js';
 
-export interface SessionMode {
+export interface CampaignSessionMode {
   ledgerPath: string;
   maxRequests: number;
   maxReservedMicroUsd: number;
   perRequestCeilingMicroUsd: number;
+}
+
+export interface KeyCappedSessionMode {
+  kind: 'key-capped-requests';
+  ledgerPath: string;
+  maxRequests: number;
+}
+
+export type SessionMode = CampaignSessionMode | KeyCappedSessionMode;
+
+export function sessionAllowance(mode: SessionMode): JevDurableCampaignAllowance | JevDurableRequestAllowance {
+  return 'kind' in mode
+    ? new JevDurableRequestAllowance(mode.ledgerPath, mode.maxRequests)
+    : new JevDurableCampaignAllowance(mode.ledgerPath, mode.maxRequests,
+      mode.maxReservedMicroUsd, mode.perRequestCeilingMicroUsd);
 }
 
 function sessionPath(sessionId: string, home: string): string {
@@ -49,10 +65,20 @@ export async function readSessionMode(sessionId: string, home = homedir()): Prom
   catch { return undefined; }
   if (!value || typeof value !== 'object') return undefined;
   const mode = value as Record<string, unknown>;
+  if (mode.schemaVersion !== 1 || typeof mode.ledgerPath !== 'string' ||
+      typeof mode.maxRequests !== 'number') return undefined;
+  if (mode.kind === 'key-capped-requests') {
+    if (Object.keys(mode).sort().join(',') !== 'kind,ledgerPath,maxRequests,schemaVersion') return undefined;
+    try {
+      const result: KeyCappedSessionMode = { kind: 'key-capped-requests',
+        ledgerPath: mode.ledgerPath, maxRequests: mode.maxRequests };
+      void sessionAllowance(result).attemptedRequests;
+      return result;
+    } catch { return undefined; }
+  }
   if (Object.keys(mode).sort().join(',') !==
       'ledgerPath,maxRequests,maxReservedMicroUsd,perRequestCeilingMicroUsd,schemaVersion' ||
-      mode.schemaVersion !== 1 || typeof mode.ledgerPath !== 'string' ||
-      typeof mode.maxRequests !== 'number' || typeof mode.maxReservedMicroUsd !== 'number' ||
+      typeof mode.maxReservedMicroUsd !== 'number' ||
       typeof mode.perRequestCeilingMicroUsd !== 'number') return undefined;
   try {
     const allowance = new JevDurableCampaignAllowance(mode.ledgerPath,
@@ -66,8 +92,7 @@ export async function readSessionMode(sessionId: string, home = homedir()): Prom
 
 export async function setSessionMode(sessionId: string, mode: SessionMode, home = homedir()): Promise<void> {
   const path = sessionPath(sessionId, home);
-  const allowance = new JevDurableCampaignAllowance(mode.ledgerPath, mode.maxRequests,
-    mode.maxReservedMicroUsd, mode.perRequestCeilingMicroUsd);
+  const allowance = sessionAllowance(mode);
   void allowance.attemptedRequests;
   const directory = join(home, '.cache', 'jev-pruner', 'codex', 'session-modes');
   await mkdir(directory, { recursive: true, mode: 0o700 });

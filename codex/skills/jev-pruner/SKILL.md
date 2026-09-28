@@ -8,8 +8,12 @@ The installed plugin must already have `dist/codex/run.js` built.
 
 When the user wants automatic pruning for this Codex session, use
 `dist/codex/session.js status` first. The default is off. Use `observe` for a
-baseline session, or `enable` only with an existing validated durable campaign
-ledger and its exact limits. Do not create a new ledger to enable the hook.
+baseline session. Use `enable` only with an existing validated durable campaign
+ledger and its exact limits. If the provider key has a verified lifetime dollar
+cap, `initialise-key-cap` may create one private request ledger using the
+provider's earlier call count. Then use `enable-key-cap` for chosen sessions.
+The request ledger does not enforce dollars and must never be reset to regain
+calls. Keep paid pruning off until a synthetic replacement probe passes.
 The automatic hook covers eligible successful build, install and test results.
 Run `report` to see local output-size estimates, then compare those with actual
 Codex usage and task quality in a similar session. The hook sends no transcript
