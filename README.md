@@ -148,27 +148,28 @@ without logging the output text.
 
 ## Codex
 
-Codex CLI 0.152.1 does not support replacing native shell output from
-`PostToolUse`. The Codex integration is an **opt-in command wrapper and skill**,
-not automatic interception. Its optional `PreToolUse` hook records a transcript
-pointer for the older unmarked route; it never rewrites commands or returns an
-approval decision.
+Codex has an explicit command wrapper and a session-scoped `PostToolUse` hook.
+The hook is off by default. It only considers successful, long build, install
+and test output, and requires an existing durable paid campaign. The wrapper
+remains available on older Codex versions. The optional `PreToolUse` hook
+records a transcript pointer only for the older unmarked wrapper route.
 
 ### 1. Install Codex and sign in
 
 These terminal commands use Bash or Zsh on macOS/Linux. Install
 [Git](https://git-scm.com/downloads) and [Node.js 18+](https://nodejs.org/en/download)
-(which includes npm), then install the Codex CLI version used in our validation:
+(which includes npm), then install Codex:
 
 ```sh
-npm install -g @openai/codex@0.152.1
+npm install -g @openai/codex
 codex --version
 codex login
 codex login status
 ```
 
-Complete the browser sign-in with your ChatGPT account. If you already have
-Codex 0.152.1 installed and authenticated, skip the install and login commands.
+Complete the browser sign-in with your ChatGPT account. The automatic hook
+requires a Codex build with the documented [`PostToolUse` replacement contract](https://learn.chatgpt.com/docs/hooks).
+Older versions can still use the explicit wrapper.
 
 ### 2. Configure a Jev transport
 
@@ -271,8 +272,8 @@ Replace `npm test` with your non-interactive build, test, install, or search
 command. The skill resolves its installed location and calls the wrapper with
 `--require-campaign` for you. Until you initialise a durable campaign ledger
 and provide all four settings below, the wrapper returns original output
-without a paid scoring request. Commands that Codex runs outside the wrapper
-are not intercepted.
+without a paid scoring request. Outside an enabled automatic session, commands
+that Codex runs without the wrapper are not intercepted.
 
 For a known noisy example, start Codex in the `jev-pruner` checkout and send:
 
@@ -302,6 +303,43 @@ Short output, failed commands, protected formats, and output Jev considers
 necessary may remain unchanged. Only an omission marker confirms pruning;
 the absence of an error does not.
 
+### Automatic pruning in one Codex session
+
+The installed plugin's `PostToolUse` hook checks each supported Bash result,
+but does nothing until the current session is enabled. It never reads the
+Codex transcript. It sends only a fixed short goal and bounded chunks of the
+current output to the Router Decisions route. It leaves short, failed,
+structured, secret-looking, interactive and unrecognised output unchanged.
+The exact original is archived under `~/.cache/jev-pruner/codex/archives/`
+before any scoring request. The replacement contains omission markers and an
+archive path. A hook or archive failure leaves the original result unchanged.
+
+Run these commands **inside each Codex session's shell**, replacing the path
+with the installed plugin root. The shell must have `CODEX_THREAD_ID`.
+`enable` takes the path and exact limits of an **existing** campaign ledger;
+it will not create or reset one. The example placeholders are intentional:
+
+```sh
+node "<installed-plugin-root>/dist/codex/session.js" observe
+node "<installed-plugin-root>/dist/codex/session.js" enable "<existing-ledger.json>" <max-requests> <max-reserved-micro-usd> <per-request-ceiling-micro-usd>
+node "<installed-plugin-root>/dist/codex/session.js" status
+node "<installed-plugin-root>/dist/codex/session.js" report
+node "<installed-plugin-root>/dist/codex/session.js" disable
+```
+
+`observe` is a baseline mode. It records sizes for eligible results without
+altering output or calling Jev. `enable` selects pruning for that session.
+Both modes write only counts and timing under
+`~/.cache/jev-pruner/codex/metrics/`, with no command, output, prompt or
+transcript text. `report` shows estimated output tokens, not measured Codex
+context use or task quality. A separate provider key cap remains a backstop.
+
+For a two-session comparison, use the same model, task, fixture and commands.
+Set the first session to `observe` and the second to `enable`. Record each
+session's `report`, actual Codex usage, task outcome and any archive recovery.
+Do not enable the paid hook until a local synthetic `PostToolUse` probe confirms
+the original result is replaced on that Codex build, including code mode.
+
 ### Updating or removing the Codex plugin
 
 From your original `jev-pruner` checkout:
@@ -324,7 +362,7 @@ in the projects where the commands ran.
 
 | Symptom | Check |
 | --- | --- |
-| `codex: command not found`, or no `plugin` subcommand | Check that npm's global executables are on `PATH` and `codex --version` reports the tested CLI version above. |
+| `codex: command not found`, or no `plugin` subcommand | Check that npm's global executables are on `PATH` and `codex --version` reports a build with plugin support. |
 | The skill is unavailable | Check `codex plugin list --json`, then start a new session after installation. |
 | `dist/codex/run.js` cannot be found | Run `npm ci` and `npm run build` in the checkout, then remove and reinstall the cached plugin as above. |
 | Large output is unchanged | Confirm Codex used the wrapper, the command succeeded, and the output is eligible. For `--require-campaign`, check the short goal and ledger settings. For the older unmarked route, check that the hook is trusted. In direct mode check the API key, Jev network access, and TypeSafe credits. In router mode check the local router and its OpenRouter Decisions route. Missing access or scoring failures preserve stdout. |

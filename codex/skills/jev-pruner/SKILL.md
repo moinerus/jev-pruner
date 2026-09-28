@@ -6,6 +6,16 @@ description: Use Jev to prune lengthy output from non-interactive build, test, i
 Resolve the plugin root as three directories above this skill's directory.
 The installed plugin must already have `dist/codex/run.js` built.
 
+When the user wants automatic pruning for this Codex session, use
+`dist/codex/session.js status` first. The default is off. Use `observe` for a
+baseline session, or `enable` only with an existing validated durable campaign
+ledger and its exact limits. Do not create a new ledger to enable the hook.
+The automatic hook covers eligible successful build, install and test results.
+Run `report` to see local output-size estimates, then compare those with actual
+Codex usage and task quality in a similar session. The hook sends no transcript
+and records no command or output text in metrics. A local synthetic replacement
+probe is required before paid activation on a new Codex build.
+
 For non-interactive commands that may produce lengthy output, use the native
 Codex shell tool to execute:
 

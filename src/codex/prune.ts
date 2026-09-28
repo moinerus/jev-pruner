@@ -22,6 +22,10 @@ export async function pruneCodexOutput(
     asker?: JevAsker;
     campaignRequired?: boolean;
     campaignAllowance?: JevScoringAllowance;
+    archiveDirectory?: string;
+    maxScoringRequests?: number;
+    maxChars?: number;
+    maxStateTokens?: number;
     signal?: AbortSignal;
   },
 ): Promise<Buffer> {
@@ -40,7 +44,7 @@ export async function pruneCodexOutput(
     );
     const goal = focusedGoal ?? messages.filter(message => message.role === 'user' && message.text)
       .slice(-3).map(message => message.text.slice(0, 500)).join('\n');
-    const directory = join(options.cwd, '.jev-pruner');
+    const directory = options.archiveDirectory ?? join(options.cwd, '.jev-pruner');
     const path = join(directory, `codex-${randomUUID()}.txt`);
     let archived: Promise<void> | undefined;
     const archive = async () => {
@@ -78,9 +82,11 @@ export async function pruneCodexOutput(
       {
         campaignAllowance: options.campaignAllowance,
         ...(options.campaignRequired ? {
-          maxStateTokens: 3_000,
+          maxStateTokens: options.maxStateTokens ?? 3_000,
           maxRequestTokens: 6_000,
           requestModel: CODEX_ROUTER_JEV_MODEL,
+          maxScoringRequests: options.maxScoringRequests,
+          maxChars: options.maxChars,
         } : {}),
       },
     );

@@ -11,6 +11,18 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/dist/codex/post-tool-use-hook.js\"",
+            "timeout": 300
+          }
+        ]
+      }
     ]
   }
 }
