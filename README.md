@@ -231,6 +231,14 @@ The list should show `jev-pruner@jev-pruner-codex` with `installed: true` and
 **Build before installing.** Installing directly from the Git URL does not
 compile TypeScript or supply the required `dist/codex/run.js`.
 
+In the ChatGPT desktop app, use the existing `jev-pruner-codex` local marketplace
+in **Plugins** to install Jev Pruner. The app runs a cached installed copy, not
+the marketplace checkout. After updating and building that checkout, restart
+the app and confirm the installed copy's `codex/hooks.json` includes
+`PostToolUse`. Then review the new hook in **Settings > Hooks > From Plugins**.
+The old `PreToolUse` entry alone means the automatic pruning hook is not
+installed. A project-local `.codex/hooks.json` is not part of this install.
+
 ### 4. Start Codex and trust the hook
 
 From the project you want to work on, in the terminal containing your API key:
@@ -311,10 +319,10 @@ Codex transcript. It sends only a fixed short goal and bounded chunks of the
 current output to the Router Decisions route. It leaves short, failed,
 structured, secret-looking, interactive and unrecognised output unchanged.
 After installing or updating the plugin, review and trust its `PostToolUse`
-definition through `/hooks` in Codex. Changed hooks are skipped until their
-new definition is trusted. Project-local hooks also require a trusted project
-`.codex/` layer. Check hook execution with a harmless synthetic result before
-enabling paid pruning.
+definition in **Settings > Hooks > From Plugins** in the desktop app, or with
+`/hooks` in the CLI. Changed hooks are skipped until their new definition is
+trusted. Check hook execution with a harmless synthetic result before enabling
+paid pruning.
 The exact original is archived under `~/.cache/jev-pruner/codex/archives/`
 before any scoring request. The replacement contains omission markers and an
 archive path. A hook or archive failure leaves the original result unchanged.
