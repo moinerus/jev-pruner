@@ -1,6 +1,6 @@
 {
   "name": "fast-jev-output",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Trim long Bash output with Jev before it reaches the model.",
   "type": "module",
   "license": "MIT",

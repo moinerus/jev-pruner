@@ -148,11 +148,11 @@ without logging the output text.
 
 ## Codex
 
-Codex has an explicit command wrapper and a session-scoped `PostToolUse` hook.
-The hook is off by default. It only considers successful, long build, install
-and test output, and requires an existing durable request ledger. The wrapper
-remains available on older Codex versions. The optional `PreToolUse` hook
-records a transcript pointer only for the older unmarked wrapper route.
+Codex has an explicit command wrapper and session-scoped hooks. The `PreToolUse`
+hook wraps simple build, install and test commands in enabled sessions. The
+wrapper can replace successful long stdout before it reaches Codex. The
+`PostToolUse` hook records output sizes without making paid requests. Automatic
+pruning is off by default and requires an existing durable request ledger.
 
 ### 1. Install Codex and sign in
 
@@ -168,9 +168,10 @@ codex login
 codex login status
 ```
 
-Complete the browser sign-in with your ChatGPT account. The automatic hook
-requires a Codex build with the documented [`PostToolUse` replacement contract](https://learn.chatgpt.com/docs/hooks).
-Older versions can still use the explicit wrapper.
+Complete the browser sign-in with your ChatGPT account. Automatic pruning
+requires a Codex build that executes the documented [`PreToolUse` command rewrite](https://learn.chatgpt.com/docs/hooks).
+Test this in the desktop app before enabling paid scoring. Older versions can
+still use the explicit wrapper.
 
 ### 2. Configure a Jev transport
 
@@ -235,10 +236,10 @@ compile TypeScript or supply the required `dist/codex/run.js`.
 In the ChatGPT desktop app, use the existing `jev-pruner-codex` local marketplace
 in **Plugins** to install Jev Pruner. The app runs a cached installed copy, not
 the marketplace checkout. After updating and building that checkout, restart
-the app and confirm the installed copy's `codex/hooks.json` includes
-`PostToolUse`. Then review the new hook in **Settings > Hooks > From Plugins**.
-The old `PreToolUse` entry alone means the automatic pruning hook is not
-installed. A project-local `.codex/hooks.json` is not part of this install.
+the app and confirm the installed copy's `codex/hooks.json` includes both
+`PreToolUse` and `PostToolUse`. Then review the changed `PreToolUse` hook in
+**Settings > Hooks > From Plugins**. A project-local `.codex/hooks.json` is
+not part of this install.
 The hook command invokes `node`, so check that Node.js 18 or newer is available
 to the desktop app before relying on hook execution.
 
@@ -316,20 +317,18 @@ the absence of an error does not.
 
 ### Automatic pruning in one Codex session
 
-The installed plugin's `PostToolUse` hook checks each supported Bash result,
-but does nothing until the current session is enabled. It never reads the
-Codex transcript. It sends only a fixed short goal and bounded chunks of the
-current output to the Router Decisions route. Codex supplies model-visible
-output text without an exit code, so the hook only considers build and test
-logs with a clear success summary and no error or warning markers. Short,
-structured, secret-looking, interactive and unrecognised output stays unchanged.
-The hook needs more than 4,000 estimated tokens of complete output. It cannot
-recover content already cut off by `max_output_tokens` or Codex's host limit.
-After installing or updating the plugin, review and trust its `PostToolUse`
-definition in **Settings > Hooks > From Plugins** in the desktop app, or with
-`/hooks` in the CLI. Changed hooks are skipped until their new definition is
-trusted. Check hook execution with a harmless synthetic result before enabling
-paid pruning.
+The installed plugin's `PreToolUse` hook rewrites only simple, recognised build,
+install and test commands in an enabled session. The wrapper runs the command,
+preserves its exit status and stderr, and checks complete stdout. Successful
+eligible output is scored with a fixed short goal and bounded chunks. It never
+reads the Codex transcript. Failed, short, structured, secret-looking and
+unrecognised output stays unchanged. The threshold is 4,000 estimated tokens.
+The `PostToolUse` hook records baseline sizes only, so an ignored rewrite cannot
+spend requests while showing the full original result. Check the wrapper in a
+fresh desktop session before enabling paid pruning. Some Codex builds have
+[silently ignored rewrites under managed permission profiles](https://github.com/openai/codex/issues/32544).
+Review and trust the changed `PreToolUse` hook in **Settings > Hooks > From
+Plugins** or with `/hooks` in the CLI. Changed hooks are skipped until trusted.
 The exact original is archived under `~/.cache/jev-pruner/codex/archives/`
 before any scoring request. The replacement contains omission markers and an
 archive path. A hook or archive failure leaves the original result unchanged.
@@ -361,7 +360,11 @@ node "<installed-plugin-root>/dist/codex/session.js" enable-key-cap "<private-le
 The ledger counts each dispatch before the call and fails closed if it is
 missing, changed, locked or uncertain. It does not enforce dollars. The
 provider key limit is the dollar stop. Keep the ledger outside a repository
-and do not reinitialise it to regain calls.
+and do not reinitialise it to regain calls. In a managed desktop sandbox, put
+the ledger in a private location the wrapped command can write, such as the
+user's temporary directory. If that file is removed, pruning stops. The wrapper
+also stores archives and metrics under the temporary directory; `report` reads
+those metrics together with the host hook's observations.
 
 `observe` is a baseline mode. It records sizes for eligible results without
 altering output or calling Jev. `enable` and `enable-key-cap` select pruning
@@ -374,8 +377,8 @@ context use or task quality. A separate provider key cap remains a backstop.
 For a two-session comparison, use the same model, task, fixture and commands.
 Set the first session to `observe` and the second to `enable`. Record each
 session's `report`, actual Codex usage, task outcome and any archive recovery.
-Do not enable the paid hook until a local synthetic `PostToolUse` probe confirms
-the original result is replaced on that Codex build, including code mode.
+Do not enable paid pruning until a live `PreToolUse` probe confirms that Codex
+ran the rewritten command and received its output, including in code mode.
 
 ### Updating or removing the Codex plugin
 
@@ -403,7 +406,7 @@ in the projects where the commands ran.
 | The skill is unavailable | Check `codex plugin list --json`, then start a new session after installation. |
 | `dist/codex/run.js` cannot be found | Run `npm ci` and `npm run build` in the checkout, then remove and reinstall the cached plugin as above. |
 | Large output is unchanged | Confirm Codex used the wrapper, the command succeeded, and the output is eligible. For `--require-campaign`, check the short goal and ledger settings. For the older unmarked route, check that the hook is trusted. In direct mode check the API key, Jev network access, and TypeSafe credits. In router mode check the local router and its OpenRouter Decisions route. Missing access or scoring failures preserve stdout. |
-| Automatic session pruning never runs | Start a fresh session after installation, review the `PostToolUse` hook in `/hooks`, check `session.js status`, and run a harmless synthetic replacement probe. If the hook never fires, leave paid mode off. |
+| Automatic session pruning never runs | Start a fresh session after installation, review the changed `PreToolUse` hook in `/hooks`, check `session.js status`, and run a harmless rewritten command probe. If the wrapper did not run, leave paid mode off. |
 | Jev returns HTTP 402 | Add TypeSafe API credits. Your Codex subscription does not fund Jev requests. |
 | Codex reports output truncation | Use the larger `tool_output_token_limit` shown above and read the original archive when available. This limit is separate from the pruning threshold. |
 

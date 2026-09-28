@@ -1,8 +1,9 @@
 import { JevDurableRequestAllowance } from './durable-request-allowance.js';
 import { disableSessionMode, isSessionObserving, observeSession, readSessionMode, sessionAllowance, setSessionMode } from './session-mode.js';
 import { sessionReport } from './session-report.js';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { tmpdir } from 'node:os';
 
 export async function sessionCommand(args: string[], env: NodeJS.ProcessEnv = process.env,
   home?: string): Promise<string> {
@@ -25,7 +26,8 @@ export async function sessionCommand(args: string[], env: NodeJS.ProcessEnv = pr
     await observeSession(sessionId, home);
     return 'Jev baseline observation on for this session. Paid pruning off.';
   }
-  if (action === 'report' && args.length === 1) return sessionReport(sessionId, home);
+  if (action === 'report' && args.length === 1) return sessionReport(sessionId, home,
+    join(tmpdir(), 'jev-pruner', 'codex'));
   if (action === 'initialise-key-cap' && args.length === 4) {
     const allowance = await JevDurableRequestAllowance.initialise(args[1]!, Number(args[2]), Number(args[3]));
     return `Jev request ledger created. Calls available: ${allowance.availableRequests}. Provider key dollar cap must be enforced separately.`;

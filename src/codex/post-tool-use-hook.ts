@@ -8,7 +8,8 @@ try {
     if (bytes > 10 * 1024 * 1024) throw new Error('Hook input too large');
     chunks.push(Buffer.from(chunk));
   }
-  const decision = await processPostToolUse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+  const decision = await processPostToolUse(JSON.parse(Buffer.concat(chunks).toString('utf8')),
+    { observeOnly: true });
   if (decision) process.stdout.write(JSON.stringify(decision) + '\n');
 } catch {
   // Hook failures leave the original tool result in place.

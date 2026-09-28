@@ -13,11 +13,16 @@ ledger and its exact limits. If the provider key has a verified lifetime dollar
 cap, `initialise-key-cap` may create one private request ledger using the
 provider's earlier call count. Then use `enable-key-cap` for chosen sessions.
 The request ledger does not enforce dollars and must never be reset to regain
-calls. Keep paid pruning off until a synthetic replacement probe passes.
-The automatic hook covers eligible successful build, install and test results.
+calls. Keep paid pruning off until a live command rewrite probe passes.
+The `PreToolUse` hook wraps only simple, recognised build and test commands in
+enabled sessions. Its wrapper preserves exit status, stderr and the original
+stdout when pruning is unsafe or unavailable. The `PostToolUse` hook records
+baseline sizes only; it must not spend when Codex ignores a command rewrite.
+In managed desktop sessions, use a private request ledger in a directory that
+the wrapped command can write. If that ledger disappears, scoring stops.
 Run `report` to see local output-size estimates, then compare those with actual
 Codex usage and task quality in a similar session. The hook sends no transcript
-and records no command or output text in metrics. A local synthetic replacement
+and records no command or output text in metrics. A live rewritten command
 probe is required before paid activation on a new Codex build.
 
 For non-interactive commands that may produce lengthy output, use the native

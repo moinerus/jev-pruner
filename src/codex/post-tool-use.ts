@@ -43,11 +43,11 @@ function commandInput(value: unknown): string | undefined {
     typeof input.cmd === 'string' ? input.cmd : undefined;
 }
 
-async function recordMetric(sessionId: string, home: string, metric: {
+async function recordMetric(sessionId: string, runtimeRoot: string, metric: {
   beforeChars: number; afterChars: number; beforeEstimatedTokens: number;
   afterEstimatedTokens: number; calls: number; latencyMs: number;
 }): Promise<void> {
-  const metricsDirectory = join(home, '.cache', 'jev-pruner', 'codex', 'metrics');
+  const metricsDirectory = join(runtimeRoot, 'metrics');
   try {
     await mkdir(metricsDirectory, { recursive: true, mode: 0o700 });
     await appendFile(join(metricsDirectory, `${sessionId}.jsonl`),
@@ -60,6 +60,8 @@ export async function processPostToolUse(input: PostToolUseInput, options: {
   asker?: JevAsker;
   baseUrl?: string;
   now?: () => number;
+  observeOnly?: boolean;
+  runtimeRoot?: string;
 } = {}): Promise<{ continue: false; stopReason: string } | undefined> {
   if (input.hook_event_name !== 'PostToolUse' || input.tool_name !== 'Bash' ||
       typeof input.session_id !== 'string' || typeof input.cwd !== 'string') return undefined;
@@ -72,9 +74,10 @@ export async function processPostToolUse(input: PostToolUseInput, options: {
       looksSecret(command, result.output) ||
       /(?:truncated|output cut off)/i.test(result.output.slice(0, 500) + result.output.slice(-500))) return undefined;
   const home = options.home ?? homedir();
+  const runtimeRoot = options.runtimeRoot ?? join(home, '.cache', 'jev-pruner', 'codex');
   const mode = await readSessionMode(input.session_id, home);
-  if (!mode) {
-    if (await isSessionObserving(input.session_id, home)) await recordMetric(input.session_id, home, {
+  if (!mode || options.observeOnly) {
+    if (mode || await isSessionObserving(input.session_id, home)) await recordMetric(input.session_id, runtimeRoot, {
       beforeChars: result.output.length, afterChars: result.output.length,
       beforeEstimatedTokens: estimateTokens(result.output),
       afterEstimatedTokens: estimateTokens(result.output), calls: 0, latencyMs: 0,
@@ -83,7 +86,7 @@ export async function processPostToolUse(input: PostToolUseInput, options: {
   }
   const allowance = sessionAllowance(mode);
   if (allowance.availableRequests < 1) {
-    await recordMetric(input.session_id, home, {
+    await recordMetric(input.session_id, runtimeRoot, {
       beforeChars: result.output.length, afterChars: result.output.length,
       beforeEstimatedTokens: estimateTokens(result.output),
       afterEstimatedTokens: estimateTokens(result.output), calls: 0, latencyMs: 0,
@@ -94,7 +97,7 @@ export async function processPostToolUse(input: PostToolUseInput, options: {
   const started = (options.now ?? Date.now)();
   let calls = 0;
   const transport = options.asker ?? createCodexRouterAsker({ home, baseUrl: options.baseUrl });
-  const archiveDirectory = join(home, '.cache', 'jev-pruner', 'codex', 'archives', input.session_id);
+  const archiveDirectory = join(runtimeRoot, 'archives', input.session_id);
   const displayed = await pruneCodexOutput(original, command, {
     cwd: input.cwd,
     archiveDirectory,
@@ -113,7 +116,7 @@ export async function processPostToolUse(input: PostToolUseInput, options: {
     /\[fast-jev-output trimmed \d+(?: more)? lines/.test(replacement) &&
     estimateTokens(replacement) <= 2_000;
   const shown = replaced ? replacement : result.output;
-  await recordMetric(input.session_id, home, {
+  await recordMetric(input.session_id, runtimeRoot, {
     beforeChars: result.output.length,
     afterChars: shown.length,
     beforeEstimatedTokens: estimateTokens(result.output),

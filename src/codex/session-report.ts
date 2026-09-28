@@ -13,13 +13,16 @@ export interface SessionMetric {
   latencyMs: number;
 }
 
-export async function sessionReport(sessionId: string, home = homedir()): Promise<string> {
+export async function sessionReport(sessionId: string, home = homedir(), extraRoot?: string): Promise<string> {
   if (!/^[a-zA-Z0-9-]{1,128}$/.test(sessionId)) throw new Error('Invalid Codex session id');
-  let lines: string[];
-  try {
-    lines = (await readFile(join(home, '.cache', 'jev-pruner', 'codex', 'metrics', `${sessionId}.jsonl`), 'utf8'))
-      .trim().split('\n');
-  } catch { return 'No Jev session metrics yet.'; }
+  const roots = [join(home, '.cache', 'jev-pruner', 'codex'), ...(extraRoot ? [extraRoot] : [])];
+  const lines: string[] = [];
+  for (const root of roots) {
+    try {
+      lines.push(...(await readFile(join(root, 'metrics', `${sessionId}.jsonl`), 'utf8')).trim().split('\n'));
+    } catch { /* A session may have metrics in only one location. */ }
+  }
+  if (lines.length === 0) return 'No Jev session metrics yet.';
   const totals = { events: 0, beforeChars: 0, afterChars: 0,
     beforeEstimatedTokens: 0, afterEstimatedTokens: 0, calls: 0, latencyMs: 0 };
   for (const line of lines) {

@@ -66,6 +66,31 @@ it('prunes only the enabled session with focused requests and a recoverable orig
   expect(await processPostToolUse({ ...input, session_id: 'session-b' }, options)).toBeUndefined();
 });
 
+it('records an enabled session without spending on a result that code mode may ignore', async () => {
+  const { home, mode, input, ask } = await fixture();
+  await setSessionMode('session-a', mode, home);
+  expect(await processPostToolUse(input, { home, asker: { ask }, observeOnly: true })).toBeUndefined();
+  expect(ask).not.toHaveBeenCalled();
+  expect(new JevDurableCampaignAllowance(mode.ledgerPath, 1000, 900_000, 900).attemptedRequests).toBe(0);
+  const metric = JSON.parse(await readFile(join(home, '.cache', 'jev-pruner', 'codex',
+    'metrics', 'session-a.jsonl'), 'utf8'));
+  expect(metric.beforeChars).toBe(log.length);
+  expect(metric.afterChars).toBe(log.length);
+});
+
+it('keeps wrapper archives and metrics in a writable runtime directory', async () => {
+  const { home, mode, input, ask } = await fixture();
+  await setSessionMode('session-a', mode, home);
+  const runtimeRoot = join(home, 'sandbox-runtime');
+  const decision = await processPostToolUse(input, { home, runtimeRoot, asker: { ask } });
+  expect(decision?.stopReason).toContain('trimmed');
+  const archive = decision!.stopReason.match(/full output: (.*?) \(Read or grep/)?.[1];
+  expect(archive).toContain(runtimeRoot);
+  expect(await readFile(archive!, 'utf8')).toBe(log);
+  expect(await readFile(join(runtimeRoot, 'metrics', 'session-a.jsonl'), 'utf8')).toContain('beforeChars');
+  expect(await sessionReport('session-a', home, runtimeRoot)).toContain('1 eligible build results');
+});
+
 it('preserves failed, short, structured and secret-looking results', async () => {
   const { home, mode, input, ask } = await fixture();
   await setSessionMode('session-a', mode, home);
