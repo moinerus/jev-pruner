@@ -43,6 +43,13 @@ it('rewrites only enabled, recognised simple commands and keeps the shared allow
     nodePath: 'C:\\node.exe', runPath: 'C:\\Jev Pruner\\run.js',
     ticketRoot: join(home, 'tickets') });
   expect(nodeTest?.hookSpecificOutput.updatedInput.command).toContain("'node' '--test' 'test.test.mjs'");
+  const desktopCommand = await processPreToolUse({ ...input,
+    tool_input: { cmd: 'npm test', workdir: 'C:\\repo' } }, { home, platform: 'win32',
+    nodePath: 'C:\\node.exe', runPath: 'C:\\Jev Pruner\\run.js',
+    ticketRoot: join(home, 'tickets') });
+  expect(desktopCommand?.hookSpecificOutput.updatedInput.cmd).toContain("'--' 'npm' 'test'");
+  expect(desktopCommand?.hookSpecificOutput.updatedInput.command).toBeUndefined();
+  expect(desktopCommand?.hookSpecificOutput.updatedInput.workdir).toBe('C:\\repo');
   expect(new JevDurableRequestAllowance(mode.ledgerPath, 1000).attemptedRequests).toBe(41);
   expect(await processPreToolUse({ ...input, session_id: 'session-b' }, { home })).toBeUndefined();
 });

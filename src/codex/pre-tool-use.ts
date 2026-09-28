@@ -26,13 +26,14 @@ export async function processPreToolUse(input: PreToolUseInput, options: {
   ticketRoot?: string;
 } = {}): Promise<{ hookSpecificOutput: {
   hookEventName: 'PreToolUse'; permissionDecision: 'allow';
-  updatedInput: Record<string, unknown> & { command: string };
+  updatedInput: Record<string, unknown>;
 } } | undefined> {
   if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash' ||
       typeof input.session_id !== 'string' || !input.tool_input ||
       typeof input.tool_input !== 'object') return undefined;
   const toolInput = input.tool_input as Record<string, unknown>;
-  const command = toolInput.command;
+  const commandKey = typeof toolInput.command === 'string' ? 'command' : 'cmd';
+  const command = toolInput[commandKey];
   if (typeof command !== 'string' || command.length > 128 || !SIMPLE_BUILD.test(command)) return undefined;
   const home = options.home ?? homedir();
   const mode = await readSessionMode(input.session_id, home);
@@ -49,5 +50,5 @@ export async function processPreToolUse(input: PreToolUseInput, options: {
     '--', ...command.split(' ')];
   const rewritten = `${platform === 'win32' ? '& ' : ''}${parts.map(part => quote(part, platform)).join(' ')}`;
   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow',
-    updatedInput: { ...toolInput, command: rewritten } } };
+    updatedInput: { ...toolInput, [commandKey]: rewritten } } };
 }
