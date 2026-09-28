@@ -312,9 +312,14 @@ describe('Codex command wrapper', () => {
     expect(result.stdout.equals(Buffer.alloc(9 * 1024 * 1024, 'x'))).toBe(true);
   });
 
-  it('propagates a child signal and handles missing executables', async () => {
+  it('propagates a child signal', async () => {
     const signaled = await run([process.execPath, '-e', 'process.kill(process.pid, "SIGTERM")']);
-    expect(signaled.signal).toBe('SIGTERM');
+    expect(signaled).toMatchObject(process.platform === 'win32'
+      ? { code: 1, signal: null }
+      : { code: null, signal: 'SIGTERM' });
+  });
+
+  it('handles missing executables', async () => {
     const missing = await run(['jev-pruner-command-that-does-not-exist']);
     expect(missing.code).toBe(127);
     expect(missing.stderr).toContain('unable to start command');
@@ -324,11 +329,14 @@ describe('Codex command wrapper', () => {
     const result = await run([process.execPath, '-e', `
       process.stdout.write('x'.repeat(512 * 1024), () => process.kill(process.pid, 'SIGTERM'));
     `]);
-    expect(result.signal).toBe('SIGTERM');
     expect(result.stdout.equals(Buffer.alloc(512 * 1024, 'x'))).toBe(true);
+    expect(result).toMatchObject(process.platform === 'win32'
+      ? { code: 1, signal: null }
+      : { code: null, signal: 'SIGTERM' });
   });
 
-  it.each(['SIGINT', 'SIGTERM'] as const)('propagates %s when cancelled after the command finishes', async termination => {
+  // Windows child.kill terminates immediately, before the abort handler can flush the buffer.
+  it.skipIf(process.platform === 'win32').each(['SIGINT', 'SIGTERM'] as const)('propagates %s when cancelled after the command finishes', async termination => {
     const options = await fixture();
     const transport = join(options.cwd, 'waiting-fetch.mjs');
     await writeFile(transport, `
