@@ -1,6 +1,8 @@
 import { JevDurableCampaignAllowance } from './durable-campaign-allowance.js';
 import { disableSessionMode, isSessionObserving, observeSession, readSessionMode, setSessionMode } from './session-mode.js';
 import { sessionReport } from './session-report.js';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 export async function sessionCommand(args: string[], env: NodeJS.ProcessEnv = process.env,
   home?: string): Promise<string> {
@@ -34,7 +36,7 @@ export async function sessionCommand(args: string[], env: NodeJS.ProcessEnv = pr
   throw new Error('Usage: session.js enable <existing-ledger.json> <max-requests> <max-reserved-micro-usd> <per-request-ceiling-micro-usd> | observe | disable | status | report');
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file:///${process.argv[1].replace(/\\/g, '/')}`).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   sessionCommand(process.argv.slice(2)).then(message => process.stdout.write(`${message}\n`))
     .catch(error => { process.stderr.write(`${error instanceof Error ? error.message : 'Session command failed'}\n`); process.exitCode = 2; });
 }
