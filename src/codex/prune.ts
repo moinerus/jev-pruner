@@ -22,13 +22,19 @@ export async function pruneCodexOutput(
     asker?: JevAsker;
     campaignRequired?: boolean;
     campaignAllowance?: JevScoringAllowance;
+    archiveDirectory?: string;
+    maxScoringRequests?: number;
+    maxChars?: number;
+    maxStateTokens?: number;
+    minTokens?: number;
+    minTokenFloor?: number;
     signal?: AbortSignal;
   },
 ): Promise<Buffer> {
   const apiKey = options.apiKey;
   const text = output.toString('utf8');
   const focusedGoal = options.goal?.trim();
-  if (!output.equals(Buffer.from(text)) || !exceedsOutputThreshold(text)
+  if (!output.equals(Buffer.from(text)) || !exceedsOutputThreshold(text, options.minTokens, options.minTokenFloor)
       || (!options.campaignRequired && !options.sessionId) ||
       (options.campaignRequired && (!focusedGoal || focusedGoal.length > 240 ||
         /[\r\n]/.test(focusedGoal) || looksSecret(focusedGoal, focusedGoal))) ||
@@ -40,7 +46,7 @@ export async function pruneCodexOutput(
     );
     const goal = focusedGoal ?? messages.filter(message => message.role === 'user' && message.text)
       .slice(-3).map(message => message.text.slice(0, 500)).join('\n');
-    const directory = join(options.cwd, '.jev-pruner');
+    const directory = options.archiveDirectory ?? join(options.cwd, '.jev-pruner');
     const path = join(directory, `codex-${randomUUID()}.txt`);
     let archived: Promise<void> | undefined;
     const archive = async () => {
@@ -77,10 +83,14 @@ export async function pruneCodexOutput(
       },
       {
         campaignAllowance: options.campaignAllowance,
+        minTokens: options.minTokens,
+        minTokenFloor: options.minTokenFloor,
         ...(options.campaignRequired ? {
-          maxStateTokens: 3_000,
+          maxStateTokens: options.maxStateTokens ?? 3_000,
           maxRequestTokens: 6_000,
           requestModel: CODEX_ROUTER_JEV_MODEL,
+          maxScoringRequests: options.maxScoringRequests,
+          maxChars: options.maxChars,
         } : {}),
       },
     );

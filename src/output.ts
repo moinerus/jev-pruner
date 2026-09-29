@@ -28,6 +28,8 @@ export type TrimDecision = 'below_threshold' | 'binary' | 'document' | 'few_chun
 
 export interface TrimOutputOptions {
   minTokens?: number;
+  /** Leave the wrapper's 10,000-token floor intact unless a caller opts into a lower one. */
+  minTokenFloor?: number;
   chunkLines?: number;
   /** Optional character target instead of line grouping; 0 uses chunkLines. */
   chunkChars?: number;
@@ -87,8 +89,8 @@ function finite(value: number | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
-export function exceedsOutputThreshold(output: string, minTokens?: number): boolean {
-  return estimateTokens(output) > Math.max(MIN_OUTPUT_TOKENS, finite(minTokens, MIN_OUTPUT_TOKENS));
+export function exceedsOutputThreshold(output: string, minTokens?: number, minTokenFloor = MIN_OUTPUT_TOKENS): boolean {
+  return estimateTokens(output) > Math.max(minTokenFloor, finite(minTokens, MIN_OUTPUT_TOKENS));
 }
 
 /** Output with NULs or a lot of control bytes is not text worth chunking. */
@@ -137,6 +139,7 @@ export function classifyOutput(command: string, output: string): OutputCategory 
   const simple = simpleCommand(command);
   if (/^(rg|grep|egrep|fgrep|find|fd|head|tail|sed|git\s+grep)(?:\s|$)/.test(simple)) return 'search';
   if (/^(make|gmake|ninja|pytest|jest|vitest|ctest|mvn|gradle|gradlew)(?:\s|$)/.test(simple) ||
+      /^node\s+--test(?:\s|$)/.test(simple) ||
       /^(npm|pnpm|yarn|bun)\s+(?:(?:run\s+)?(?:build|test|lint|typecheck|check)(?::[\w-]+)*|install|ci|add)(?:\s|$)/.test(simple) ||
       /^(cargo|go)\s+(build|test|check|clippy|install)(?:\s|$)/.test(simple) ||
       /^cmake\s+--build(?:\s|$)/.test(simple) ||
@@ -391,7 +394,7 @@ async function trimOutputAttempt(
     finite(options.maxStateTokens, DEFAULT_MAX_STATE_TOKENS),
   );
 
-  if (!exceedsOutputThreshold(input.output, options.minTokens)) return untrimmed(input.output, 0, [], 'below_threshold', options.onDecision);
+  if (!exceedsOutputThreshold(input.output, options.minTokens, options.minTokenFloor)) return untrimmed(input.output, 0, [], 'below_threshold', options.onDecision);
 
   if (looksBinary(input.output)) return untrimmed(input.output, 0, [], 'binary', options.onDecision);
   const category = classifyOutput(input.command, input.output);

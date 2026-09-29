@@ -1,7 +1,8 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, expect, it, vi } from 'vitest';
-import { CODEX_ROUTER_JEV_MODEL, createCodexRouterAsker } from '../src/codex/router-asker.js';
+import { CODEX_ROUTER_JEV_MODEL, createCodexRouterAsker,
+  createScopedCodexRouterAsker } from '../src/codex/router-asker.js';
 
 async function withEndpoint(
   handle: Parameters<typeof createServer>[0],
@@ -40,6 +41,24 @@ describe('Codex Router Jev asker', () => {
     expect(init?.headers).toEqual({ authorization: 'Bearer caller/secret', 'content-type': 'application/json' });
     expect(init?.redirect).toBe('error');
     expect(JSON.parse(String(init?.body))).toEqual({ model: CODEX_ROUTER_JEV_MODEL, state, questions });
+  });
+
+  it('uses a scoped ticket only on the Jev endpoint', async () => {
+    const ticket = `${'A'.repeat(24)}.${'B'.repeat(43)}`;
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ answers: { keep: { noul: 1 } } }),
+      { status: 200 }));
+    const asker = createScopedCodexRouterAsker({ ticketFile: 'unused',
+      readTicket: async () => ticket, fetch });
+    await asker.ask('state', { keep: { type: 'noul', instructions: 'keep?' } });
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe('http://127.0.0.1:4202/v1/jev-decisions');
+    expect(init?.headers).toEqual({ authorization: `Bearer ${ticket}`,
+      'content-type': 'application/json' });
+    expect(JSON.parse(String(init?.body)).model).toBe(CODEX_ROUTER_JEV_MODEL);
+    const unavailable = createScopedCodexRouterAsker({ ticketFile: 'unused',
+      readTicket: async () => { throw new Error('missing'); }, fetch });
+    await expect(unavailable.ask('state', {})).rejects.toThrow('missing');
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it('fails when the host capability is unavailable or the router rejects the request', async () => {

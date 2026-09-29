@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { contextPath, saveContext } from '../src/codex/context.js';
 import { codexMessages } from '../src/codex/history.js';
@@ -12,6 +13,7 @@ import type { JevQuestions, JevState } from '../src/jev.js';
 
 const directories: string[] = [];
 const sessionId = 'boundary-test';
+const userInfoFallback = 'import os from "node:os"; try { os.userInfo(); } catch { os.userInfo = () => ({ username: "test" }); }';
 const output = Buffer.from(('cache '.repeat(35) + '\n').repeat(400));
 const transcript = [
   { type: 'session_meta', payload: { id: sessionId } },
@@ -21,7 +23,7 @@ const transcript = [
 ].map(entry => JSON.stringify(entry)).join('\n');
 
 async function fixture() {
-  const cwd = await mkdtemp(join(homedir(), 'jev-codex-boundary-'));
+  const cwd = await mkdtemp(join(tmpdir(), 'jev-codex-boundary-'));
   directories.push(cwd);
   const path = join(cwd, 'rollout.jsonl');
   await writeFile(path, transcript);
@@ -118,10 +120,12 @@ describe('Codex adapter boundaries', () => {
     const directory = join(options.cwd, '.jev-pruner');
     const archive = (await readdir(directory)).find(file => file.endsWith('.txt'))!;
     expect(await readFile(join(directory, archive))).toEqual(above);
-    for (const file of [join(directory, archive), contextPath(sessionId, options.home)]) {
-      expect((await stat(file)).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') {
+      for (const file of [join(directory, archive), contextPath(sessionId, options.home)]) {
+        expect((await stat(file)).mode & 0o777).toBe(0o600);
+      }
+      expect((await stat(directory)).mode & 0o777).toBe(0o700);
     }
-    expect((await stat(directory)).mode & 0o777).toBe(0o700);
   });
 
   it('does not include reasoning or privileged prompts', () => {
@@ -138,7 +142,9 @@ describe('Codex adapter boundaries', () => {
 async function command(script: string, input = '') {
   const options = await fixture();
   const child = spawn(process.execPath, [
-    '--import', createRequire(import.meta.url).resolve('tsx'), resolve('src/codex/run.ts'), '--', process.execPath, '-e', script,
+    '--import', `data:text/javascript,${encodeURIComponent(userInfoFallback)}`,
+    '--import', pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href,
+    resolve('src/codex/run.ts'), '--', process.execPath, '-e', script,
   ], {
     cwd: options.cwd,
     env: { ...process.env, CODEX_THREAD_ID: '', TYPESAFE_API_KEY: '', JEV_TEST_VALUE: 'preserved' },
@@ -156,8 +162,10 @@ async function command(script: string, input = '') {
 }
 
 describe('Codex subprocess boundaries', () => {
-  it.each(['SIGINT', 'SIGTERM'] as const)('forwards %s to a running child and flushes stdout', async termination => {
+  // Windows child.kill terminates immediately, so the wrapper cannot flush on cancellation.
+  it.skipIf(process.platform === 'win32').each(['SIGINT', 'SIGTERM'] as const)('forwards %s to a running child and flushes stdout', async termination => {
     const child = spawn(process.execPath, [
+      '--import', `data:text/javascript,${encodeURIComponent(userInfoFallback)}`,
       '--import', 'tsx', resolve('src/codex/run.ts'), '--', process.execPath, '-e', `
         process.stdout.write('before-cancellation\\n', () => process.stderr.write('child-ready'));
         setInterval(() => {}, 1000);
@@ -188,7 +196,7 @@ describe('Codex subprocess boundaries', () => {
       process.stdout.write(process.cwd() + '\\n' + process.env.JEV_TEST_VALUE + '\\n');
       process.stderr.write('stderr-only');
     `, 'stdin-only\n');
-    expect(result.code).toBe(0);
+    expect(result.code, result.stderr.toString()).toBe(0);
     expect(result.stdout.toString()).toBe(`${result.cwd}\npreserved\nstdin-only\n`);
     expect(result.stderr.toString()).toBe('stderr-only');
   });
@@ -196,7 +204,7 @@ describe('Codex subprocess boundaries', () => {
   it.each([8 * 1024 * 1024 - 1, 8 * 1024 * 1024, 8 * 1024 * 1024 + 1])(
     'preserves all %i bytes at the capture boundary', async bytes => {
       const result = await command(`process.stdout.write(Buffer.alloc(${bytes}, 0x61))`);
-      expect(result.code).toBe(0);
+      expect(result.code, result.stderr.toString()).toBe(0);
       expect(result.stdout.equals(Buffer.alloc(bytes, 0x61))).toBe(true);
     },
   );
@@ -205,7 +213,9 @@ describe('Codex subprocess boundaries', () => {
     const result = await command(`
       process.stdout.write('completed\\n', () => process.kill(process.pid, 'SIGINT'));
     `);
-    expect(result.signal).toBe('SIGINT');
     expect(result.stdout.toString()).toBe('completed\n');
+    expect(result).toMatchObject(process.platform === 'win32'
+      ? { code: 1, signal: null }
+      : { code: null, signal: 'SIGINT' });
   });
 });

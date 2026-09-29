@@ -148,36 +148,47 @@ without logging the output text.
 
 ## Codex
 
-Codex CLI 0.152.1 does not support replacing native shell output from
-`PostToolUse`. The Codex integration is an **opt-in command wrapper and skill**,
-not automatic interception. Its optional `PreToolUse` hook records a transcript
-pointer for the older unmarked route; it never rewrites commands or returns an
-approval decision.
+Codex has an explicit command wrapper and session-scoped hooks. The `PreToolUse`
+hook wraps simple build, install and test commands in enabled sessions. The
+wrapper can replace successful long stdout before it reaches Codex. The
+`PostToolUse` hook records output sizes without making paid requests. Automatic
+pruning is off by default and requires an existing durable request ledger.
+The managed Codex desktop sandbox cannot read Router's host-owned caller
+capability. The trusted `PreToolUse` hook now signs a short-lived, Jev-only
+ticket for the wrapped command. Automatic paid mode requires a Router build
+with the matching scoped endpoint and a successful live probe. Until then the
+command runs with its original output.
 
 ### 1. Install Codex and sign in
 
 These terminal commands use Bash or Zsh on macOS/Linux. Install
 [Git](https://git-scm.com/downloads) and [Node.js 18+](https://nodejs.org/en/download)
-(which includes npm), then install the Codex CLI version used in our validation:
+(which includes npm), then install Codex:
 
 ```sh
-npm install -g @openai/codex@0.152.1
+npm install -g @openai/codex
+node --version
 codex --version
 codex login
 codex login status
 ```
 
-Complete the browser sign-in with your ChatGPT account. If you already have
-Codex 0.152.1 installed and authenticated, skip the install and login commands.
+Complete the browser sign-in with your ChatGPT account. Automatic pruning
+requires a Codex build that executes the documented [`PreToolUse` command rewrite](https://learn.chatgpt.com/docs/hooks).
+Test this in the desktop app before enabling paid scoring. Older versions can
+still use the explicit wrapper.
 
 ### 2. Configure a Jev transport
 
-Choose one transport for the shell session that launches Codex:
+Choose one transport for explicit wrapper calls. Automatic desktop sessions use
+the scoped Codex Router route regardless of this setting:
 
 - **TypeSafe direct (default):** set `TYPESAFE_API_KEY` as described below.
 - **Codex Router:** set `JEV_PRUNER_TRANSPORT=codex-router`. This uses a local
   Codex Router with its OpenRouter Decisions route and its host-owned caller
-  capability. The wrapper never reads an OpenRouter API key. Set
+  capability for explicit wrapper calls. Automatic desktop sessions use a
+  Jev-only ticket from the trusted hook instead. The wrapper never reads an
+  OpenRouter API key. Set
   `JEV_PRUNER_CODEX_ROUTER_BASE_URL` only when your router is not running at
   `http://127.0.0.1:4202`.
 
@@ -230,6 +241,16 @@ The list should show `jev-pruner@jev-pruner-codex` with `installed: true` and
 **Build before installing.** Installing directly from the Git URL does not
 compile TypeScript or supply the required `dist/codex/run.js`.
 
+In the ChatGPT desktop app, use the existing `jev-pruner-codex` local marketplace
+in **Plugins** to install Jev Pruner. The app runs a cached installed copy, not
+the marketplace checkout. After updating and building that checkout, restart
+the app and confirm the installed copy's `codex/hooks.json` includes both
+`PreToolUse` and `PostToolUse`. Then review the changed `PreToolUse` hook in
+**Settings > Hooks > From Plugins**. A project-local `.codex/hooks.json` is
+not part of this install.
+The hook command invokes `node`, so check that Node.js 18 or newer is available
+to the desktop app before relying on hook execution.
+
 ### 4. Start Codex and trust the hook
 
 From the project you want to work on, in the terminal containing your API key:
@@ -271,8 +292,8 @@ Replace `npm test` with your non-interactive build, test, install, or search
 command. The skill resolves its installed location and calls the wrapper with
 `--require-campaign` for you. Until you initialise a durable campaign ledger
 and provide all four settings below, the wrapper returns original output
-without a paid scoring request. Commands that Codex runs outside the wrapper
-are not intercepted.
+without a paid scoring request. Outside an enabled automatic session, commands
+that Codex runs without the wrapper are not intercepted.
 
 For a known noisy example, start Codex in the `jev-pruner` checkout and send:
 
@@ -302,6 +323,84 @@ Short output, failed commands, protected formats, and output Jev considers
 necessary may remain unchanged. Only an omission marker confirms pruning;
 the absence of an error does not.
 
+### Automatic pruning in one Codex session
+
+The installed plugin's `PreToolUse` hook rewrites only simple, recognised build,
+install and test commands in an enabled session. The wrapper runs the command,
+preserves its exit status and stderr, and checks complete stdout. Successful
+eligible output is scored with a fixed short goal and bounded chunks. It never
+reads the Codex transcript. Failed, short, structured, secret-looking and
+unrecognised output stays unchanged. The threshold is 4,000 estimated tokens.
+This includes `node --test` and a single test file, so Node's built-in test
+runner works without a package-manager launcher.
+The trusted hook asks local Router for a ticket valid for one hour and up to
+19 Jev requests, then places it in the user's temporary directory. The hook
+does not read Router's broad caller capability. The rewritten command receives
+only the ticket file path.
+Router accepts the ticket solely on `POST /v1/jev-decisions` for the pinned Jev
+campaign model. The wrapper removes the file after the command. Router keeps
+the provider key, and an expired or invalid ticket preserves stdout.
+The `PostToolUse` hook records baseline sizes only, so an ignored rewrite cannot
+spend requests while showing the full original result. Check the wrapper in a
+fresh desktop session before enabling paid pruning. Some Codex builds have
+[silently ignored rewrites under managed permission profiles](https://github.com/openai/codex/issues/32544).
+Review and trust the changed `PreToolUse` hook in **Settings > Hooks > From
+Plugins** or with `/hooks` in the CLI. Changed hooks are skipped until trusted.
+The exact original is archived under the session runtime's `archives/`
+directory before any scoring request. In managed desktop sessions this runtime
+is under the user's temporary directory. The replacement contains omission
+markers and an archive path. A hook or archive failure leaves the original
+result unchanged.
+
+Run these commands **inside each Codex session's shell**, replacing the path
+with the installed plugin root. The shell must have `CODEX_THREAD_ID`.
+For a route with an enforced per-call cost ceiling, `enable` takes an
+**existing** campaign ledger and its exact limits. It will not create or reset
+one. The example placeholders are intentional:
+
+```sh
+node "<installed-plugin-root>/dist/codex/session.js" observe
+node "<installed-plugin-root>/dist/codex/session.js" enable "<existing-ledger.json>" <max-requests> <max-reserved-micro-usd> <per-request-ceiling-micro-usd>
+node "<installed-plugin-root>/dist/codex/session.js" status
+node "<installed-plugin-root>/dist/codex/session.js" report
+node "<installed-plugin-root>/dist/codex/session.js" disable
+```
+
+If the provider key has a verified lifetime dollar limit but the route has no
+per-call cost ceiling, use the request-count ledger instead. Check the key's
+limit and its earlier request count in the provider UI first. Initialise the
+ledger once, then enable only the sessions chosen for pruning:
+
+```sh
+node "<installed-plugin-root>/dist/codex/session.js" initialise-key-cap "<private-ledger.json>" <total-request-limit> <earlier-provider-requests>
+node "<installed-plugin-root>/dist/codex/session.js" enable-key-cap "<private-ledger.json>" <total-request-limit>
+```
+
+The ledger counts each dispatch before the call and fails closed if it is
+missing, changed, locked or uncertain. It does not enforce dollars. The
+provider key limit is the dollar stop. Keep the ledger outside a repository
+and do not reinitialise it to regain calls. In a managed desktop sandbox, put
+the ledger in a private location the wrapped command can write, such as the
+user's temporary directory. If that file is removed, pruning stops. The wrapper
+also stores archives and metrics under the temporary directory; `report` reads
+those metrics together with the host hook's observations.
+
+`observe` is a baseline mode. It records sizes for eligible results without
+altering output or calling Jev. `enable` and `enable-key-cap` select pruning
+for that session.
+Both modes write only counts and timing under
+`~/.cache/jev-pruner/codex/metrics/`, with no command, output, prompt or
+transcript text. `report` shows estimated output tokens, not measured Codex
+context use or task quality. A separate provider key cap remains a backstop.
+
+For a two-session comparison, use the same model, task, fixture and commands.
+Set the first session to `observe` and the second to `enable`. Record each
+session's `report`, actual Codex usage, task outcome and any archive recovery.
+Do not enable paid pruning until a live `PreToolUse` probe confirms that Codex
+ran the rewritten command and received its output, including in code mode. In
+managed desktop sessions, also confirm that the wrapped command can reach its
+scoring transport. A successful rewrite alone does not prove Router access.
+
 ### Updating or removing the Codex plugin
 
 From your original `jev-pruner` checkout:
@@ -324,10 +423,11 @@ in the projects where the commands ran.
 
 | Symptom | Check |
 | --- | --- |
-| `codex: command not found`, or no `plugin` subcommand | Check that npm's global executables are on `PATH` and `codex --version` reports the tested CLI version above. |
+| `codex: command not found`, or no `plugin` subcommand | Check that npm's global executables are on `PATH` and `codex --version` reports a build with plugin support. |
 | The skill is unavailable | Check `codex plugin list --json`, then start a new session after installation. |
 | `dist/codex/run.js` cannot be found | Run `npm ci` and `npm run build` in the checkout, then remove and reinstall the cached plugin as above. |
 | Large output is unchanged | Confirm Codex used the wrapper, the command succeeded, and the output is eligible. For `--require-campaign`, check the short goal and ledger settings. For the older unmarked route, check that the hook is trusted. In direct mode check the API key, Jev network access, and TypeSafe credits. In router mode check the local router and its OpenRouter Decisions route. Missing access or scoring failures preserve stdout. |
+| Automatic session pruning never runs | Start a fresh session after installation, review the changed `PreToolUse` hook in `/hooks`, check `session.js status`, and run a harmless rewritten command probe. If the wrapper did not run, leave paid mode off. |
 | Jev returns HTTP 402 | Add TypeSafe API credits. Your Codex subscription does not fund Jev requests. |
 | Codex reports output truncation | Use the larger `tool_output_token_limit` shown above and read the original archive when available. This limit is separate from the pruning threshold. |
 

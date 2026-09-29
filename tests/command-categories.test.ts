@@ -11,6 +11,7 @@ const dropAll = async (_state: JevState, questions: JevQuestions) => ({
 describe('output categories', () => {
   it.each([
     'npm run build', 'npm test -- --verbose', 'npm ci', 'npm install',
+    'node --test test.test.mjs',
     'pnpm run test:unit', 'pnpm build', 'yarn install', 'bun test',
     'CI=true npm run build', 'LABEL="local build" npm test',
     '/usr/local/bin/npm run build', './node_modules/.bin/vitest run',
