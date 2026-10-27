@@ -8,15 +8,24 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from statistics import median
 
+from evals.sources import arm_options, control_arm, plugin_name, production_root
+
+REPO = Path(__file__).resolve().parents[1]
+
 TRIM_LOG = re.compile(r"kept (\d+)/(\d+) chunks \((\d+)→(\d+) chars\)")
-TRIM_MARKER = re.compile(r"\[fast-jev-output trimmed (\d+) lines \((\d+) chars\)")
-PRUNED_OUTPUT = re.compile(
-    r"\[fast-jev-output (?:trimmed \d+ (?:more )?lines|cut this section to fit)"
+PLUGINS = r"(?:fast-jev-output|pruner-output)"
+TRIM_MARKER = re.compile(
+    rf"\[{PLUGINS} trimmed (\d+) lines \((\d+) chars\)|\[…(\d+) lines\]"
 )
-DECISION_PREFIX = "fast-jev-output decision "
+PRUNED_OUTPUT = re.compile(
+    rf"\[{PLUGINS} (?:trimmed(?: \d+ (?:more )?lines|;)|cut this section to fit)"
+    rf"|\[…\d+ lines\]|\[{PLUGINS}: (?:\d+ lines omitted|cut to fit)"
+)
+DECISION_PREFIX = re.compile(rf"^{PLUGINS} decision ")
 ARCHIVE_FOOTER = re.compile(
-    r"\[fast-jev-output (?:trimmed \d+ lines \(\d+ chars\); )?"
+    rf"\[{PLUGINS} (?:trimmed \d+ lines \(\d+ chars\); )?"
     r"full output: ([^\n]+) \(Read or grep it if needed\)\]"
+    rf"|\[{PLUGINS}: \d+ lines omitted; full output: ([^\n\]]+)\]"
 )
 
 
@@ -24,7 +33,7 @@ def native_archive_exists(agent: Path, content: str) -> bool:
     matches = list(ARCHIVE_FOOTER.finditer(content))
     if not matches:
         return False
-    remote = PurePosixPath(matches[-1][1])
+    remote = PurePosixPath(matches[-1][1] or matches[-1][2])
     base = (agent / "sessions/projects").resolve()
     if not base.is_relative_to(agent.resolve()):
         return False
@@ -85,10 +94,11 @@ def summarize_decisions(events: list[dict], logs: list[str], bash: list[dict]) -
     decisions = []
     malformed = 0
     for text in logs:
-        if not text.startswith(DECISION_PREFIX):
+        prefix = DECISION_PREFIX.match(text)
+        if not prefix:
             continue
         try:
-            decision = json.loads(text[len(DECISION_PREFIX) :])
+            decision = json.loads(text[prefix.end() :])
             if (
                 not isinstance(decision, dict)
                 or decision.get("version") != 1
@@ -104,7 +114,11 @@ def summarize_decisions(events: list[dict], logs: list[str], bash: list[dict]) -
             malformed += 1
     calls = {}
     results = {}
-    for event in events:
+    call_order = {}
+    result_order = {}
+    explanations = {}
+    last_explanation = ""
+    for event_index, event in enumerate(events):
         message = event.get("message")
         if not isinstance(message, dict) or not isinstance(
             message.get("content"), list
@@ -113,14 +127,22 @@ def summarize_decisions(events: list[dict], logs: list[str], bash: list[dict]) -
         for block in message["content"]:
             if not isinstance(block, dict):
                 continue
+            if block.get("type") == "text" and isinstance(block.get("text"), str):
+                last_explanation = block["text"]
             if block.get("type") == "tool_use" and isinstance(block.get("id"), str):
                 calls[block["id"]] = block
+                call_order[block["id"]] = event_index
+                explanations[block["id"]] = last_explanation
             if block.get("type") == "tool_result" and isinstance(
                 block.get("tool_use_id"), str
             ):
                 results[block["tool_use_id"]] = result_text(block.get("content"))
+                result_order[block["tool_use_id"]] = event_index
+                last_explanation = ""
     archives = {
-        match[1] for text in results.values() for match in ARCHIVE_FOOTER.finditer(text)
+        match[1] or match[2]
+        for text in results.values()
+        for match in ARCHIVE_FOOTER.finditer(text)
     }
     for record in bash:
         output = record.get("answer", {}).get("result")
@@ -141,8 +163,22 @@ def summarize_decisions(events: list[dict], logs: list[str], bash: list[dict]) -
         argument_text = json.dumps(arguments, ensure_ascii=False)
         matched = sorted(path for path in archives if path in argument_text)
         if matched:
+            prior_prunes = [
+                tool_id
+                for tool_id, text in results.items()
+                if PRUNED_OUTPUT.search(text)
+                and result_order[tool_id] < call_order[identifier]
+                and any(path in text for path in matched)
+            ]
             accesses.append(
-                {"tool_use_id": identifier, "tool": call["name"], "paths": matched}
+                {
+                    "tool_use_id": identifier,
+                    "tool": call["name"],
+                    "paths": matched,
+                    "after_pruned_tool_ids": prior_prunes,
+                    "stated_reason": explanations[identifier] or None,
+                    "reason_classification": "unreviewed",
+                }
             )
     visible = []
     for decision in decisions:
@@ -192,7 +228,12 @@ def summarize_agent(agent: Path, arm: str, stream: str = "claude-code.txt") -> d
     init = next((e for e in events if e.get("subtype") == "init"), {})
     plugins = sorted(p["name"] for p in init.get("plugins", []))
     expected = sorted(
-        ["jev-eval-observer"] + (["fast-jev-output"] if arm == "plugin" else [])
+        ["jev-eval-observer"]
+        + (
+            [plugin_name(production_root(REPO, arm))]
+            if arm_options(arm) is not None
+            else []
+        )
     )
     issues = []
     if plugins != expected:
@@ -254,7 +295,7 @@ def summarize_agent(agent: Path, arm: str, stream: str = "claude-code.txt") -> d
         issues.append(
             "Jev errors occurred; inspect captures before interpreting savings"
         )
-    if arm == "control" and (started or trims):
+    if arm == control_arm() and (started or trims):
         issues.append("Control unexpectedly invoked pruning")
     bash_records = [
         json.loads(path.read_text()) for path in evidence.glob("bash-*.json")
@@ -335,18 +376,18 @@ def summarize_agent(agent: Path, arm: str, stream: str = "claude-code.txt") -> d
         "chars_before_pruned_outputs": sum(int(m[3]) for m in trims),
         "chars_after_pruned_outputs": sum(int(m[4]) for m in trims),
         "net_chars_saved": sum(int(m[3]) - int(m[4]) for m in trims),
-        "raw_chars_removed": sum(int(m[2]) for m in markers),
-        "lines_removed": sum(int(m[1]) for m in markers),
+        "raw_chars_removed": sum(int(m[2]) for m in markers if m[2]),
+        "lines_removed": sum(int(m[1] or m[3]) for m in markers),
     }
 
 
-def summarize_trial(path: Path) -> dict:
+def summarize_trial(path: Path, arm: str | None = None) -> dict:
     trial = json.loads(path.read_text())
     settings_path = path.parent / "agent/eval-settings.json"
     settings = (
         json.loads(settings_path.read_text())
         if settings_path.exists()
-        else {"arm": path.parent.parent.name.rsplit("-", 1)[-1]}
+        else {"arm": arm or path.parent.parent.name.rsplit("-", 1)[-1]}
     )
     exception = trial.get("exception_info")
     return {
@@ -380,7 +421,7 @@ def summarize_smoke(path: Path, arm: str) -> dict:
         row["measurement_issues"].append("Smoke model does not match pin")
     if row["bash_calls_observed"] != 1:
         row["measurement_issues"].append("Smoke must execute exactly one Bash call")
-    if arm == "plugin" and not (
+    if arm_options(arm) is not None and not (
         row["jev_responses"] > 0
         and all(status == 200 for status in row["jev_http_statuses"])
         and row["pruned_results_in_transcript"] > 0

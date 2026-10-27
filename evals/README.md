@@ -1,5 +1,30 @@
 # Eval suite
 
+## Codex paired log-reading comparison
+
+With Codex CLI 0.152.1 authenticated through ChatGPT, the installed Codex plugin
+matching the current build, and `TYPESAFE_API_KEY` available:
+
+```sh
+npm run build
+node evals/codex-cohort.mjs "$HOME/codex-cohort-new"
+```
+
+This freezes six pairs on the existing constructed build-log fixture, pins
+GPT-5.5 with low reasoning and a 30,000-token tool-output budget, and alternates
+native/pruned order. Both arms may recover missing information from an archive.
+The harness audits recorded model-visible output, archive equality, retained
+lines, and stderr; it grades facts separately from JSON formatting. It includes
+both arms in the effectiveness cohort only if actual pruning occurred and both
+arms passed the instrumentation audit. Incorrect answers and missing required
+facts remain in that cohort. All trials, including exclusions, are preserved.
+
+This is an exploratory log-reading comparison, not a coding benchmark.
+GPT-5.5 uses the native shell transcript format; newer code-mode models require
+separate validation of their outer output limits before using this protocol.
+Caching is shared and uncontrolled. The saved API-equivalent model and Jev
+estimates are reference-price calculations, not subscription charges or invoices.
+
 ## Pruning diagnostics and character chunking
 
 Set `JEV_EVAL_DIAGNOSTICS=1` to capture a metadata-only decision for each Bash
@@ -8,6 +33,27 @@ character-target chunks; omit it to retain the production line-based default.
 Both the smoke and Harbor adapter pass these through the inline plugin's
 `pluginConfigs` entry. Full-run provenance records the options and refuses a
 resume with different options.
+
+## Multiple plugin arms (independent scorers)
+
+By default a run pairs `control` (no plugin) with `plugin` (Jev). To compare
+several scorers against the same native control, point `JEV_EVAL_ARMS` at a JSON
+file mapping arm names to `null` (exactly one native control) or to
+`{"options": {...}, "env": {...}}`. `options` are merged over the env-derived
+plugin options above and passed through `pluginConfigs`; `env` entries whose
+value starts with `$` are read from the launcher environment and exported into
+the agent container. `evals/arms/pruner-cohort.json` declares Jev plus the
+independent `pruner-model` checkpoints served at their Jev-compatible
+`baseUrl`, each authenticated with `PRUNER_SERVE_TOKEN`. An arm may also name a
+`plugin` checkout (absolute path holding `.claude-plugin`, `hooks` and `src`) to
+run a different Claude Code plugin than this repository's hook; its manifest
+name is used for `pluginConfigs`, the expected init plugin list, and the
+`plugin/<name>/` prefix of its pinned source hashes, and its commit is recorded
+under `production_checkouts`. `evals/arms/pruner-standalone.json` runs
+`pruner-model`'s own per-line `pruner-output` hook (no token floor) this way,
+with `PRUNER_MODEL_PLUGIN_DIR` pointing at `pruner-model/plugin`. Manifests must then
+contain one trial per arm for each task repetition; `results.json` pairs every
+non-control arm with the control and records the arm declaration.
 
 The summarizer joins decisions to the final Claude transcript by tool-use ID.
 It separates complete source size, hook stdout size, the host's native
@@ -34,6 +80,61 @@ arm order, options, model, versions and budgets before inference. Report all
 planned rows and failures, success and total model-price estimates together,
 with each repetition separate from historical trials. Subsets selected using
 prior outputs are exploratory and do not estimate full-benchmark performance.
+
+## Controlled repair and reference comparison
+
+Build `evals/retention.Dockerfile` on the pinned Claude smoke image, then validate
+the constructed pytest/TypeScript projects and their independent verifiers:
+
+```sh
+docker build -f evals/retention.Dockerfile -t jev-retention:2.1.274 .
+python -m evals.retention_workloads "$HOME/retention-workload-validation-new"
+```
+
+Commit the candidate first. With the subscription mounts, Jev key and
+`JEV_EVAL_DIAGNOSTICS=1` configured as below, run:
+
+```sh
+python -m evals.retention_cohort "$HOME/retention-disabled-new" \
+  --cache-mode disabled --repetitions 2
+```
+
+This runs six task pairs (twelve trials) plus two startup checks, sequentially with
+alternating arm order. The protocol and source hashes are written before
+inference. Startup must authenticate, run the requested tool, produce a usable
+result, and satisfy the requested cache mode. Disabled mode exports the documented
+`DISABLE_PROMPT_CACHING=1` and requires nonempty usage with zero cache reads and
+cache creation on every trial. Failed checks stop the run without retries.
+Declare any separate `--cache-mode default` comparison before starting inference.
+Startup calls warm both arms, but shared default caching remains uncontrolled;
+do not pool prices across cache modes or claim equal cache states.
+
+The two repair tasks execute actual tools over generated projects. Their initial
+commands print the actual nonzero exit status and return normally so Claude gives
+the hook a structured Bash record; throwing tool errors remain unchanged. The
+reference task runs `pydoc pathlib`. These are controlled workloads, not a
+Terminal-Bench or representative production sample.
+
+Constructed workloads expose `Bash`, `Read`, `Grep`, and `Edit`; legacy fixture
+mode exposes only `Bash`, `Read`, and `Grep`. The protocol records the same tool
+list passed to Claude. Protected-file checks still reject edits outside the
+permitted repair target.
+
+`task_success`/`success` require an executable repair verifier and unchanged
+protected input files, or a factual answer for the reference task. Report
+`factual_pass`, `format_pass`, `strict_pass`, and `legacy_success` separately:
+prose/fences and declared aliases can pass factual grading without passing the
+bare-JSON format check. Missing facts, wrong values/types, duplicate keys and
+conflicting JSON objects fail factual grading. Only instruction whitespace and
+predeclared aliases are normalized.
+
+Recovery observations include preceding explanations and the IDs of already
+pruned results. They start as `unreviewed`: audit the required facts in the
+visible result before classifying a read as missing information, verification,
+prompt-induced, or unexplained. An archive access alone does not establish lost
+information. Record cache validity, task failures, timeouts, visible characters,
+repeated commands, model usage, and Jev request usage/latency together; the model
+price estimate is not a Claude Max subscription charge.
 
 ## Retention activation preflight
 
@@ -71,7 +172,7 @@ JEV_EVAL_AUTH_MODE=subscription \
 JEV_EVAL_CLAUDE_AUTH_DIR=/private/official-claude-config \
 JEV_EVAL_DIAGNOSTICS=1 \
 python3 -m evals.retention_cohort /new/cohort-evidence \
-  --fixtures /completed/retention-preflight
+  --fixtures /completed/retention-preflight --repetitions 3 --cache-mode default
 ```
 
 This uses the pinned local Docker smoke image, live Jev, and official Claude

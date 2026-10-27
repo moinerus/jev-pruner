@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import tempfile
 import unittest
@@ -8,9 +9,12 @@ from unittest.mock import patch
 from evals.full import source_hashes
 from evals.sources import (
     PRODUCTION,
+    plugin_name,
     plugin_options,
+    plugin_roots,
     production_provenance,
     production_root,
+    shared_env,
 )
 
 
@@ -44,6 +48,7 @@ class SourceTests(unittest.TestCase):
             for name in PRODUCTION:
                 (plugin / name).mkdir(parents=True)
             (plugin / "src/output.ts").write_text("selected production")
+            (plugin / ".claude-plugin/plugin.json").write_text('{"name": "ext"}')
             with (
                 patch.dict(os.environ, {"JEV_EVAL_PLUGIN_DIR": str(plugin)}),
                 patch("evals.full.REPO", harness),
@@ -56,12 +61,43 @@ class SourceTests(unittest.TestCase):
             self.assertEqual(files.call_args_list[0].kwargs["cwd"], harness)
             self.assertEqual(files.call_args_list[1].kwargs["cwd"], plugin)
             self.assertEqual(
-                hashes["src/output.ts"],
+                hashes["plugin/ext/src/output.ts"],
                 hashlib.sha256(b"selected production").hexdigest(),
             )
             self.assertEqual(
                 hashes["evals/observer.ts"], hashlib.sha256(b"observer").hexdigest()
             )
+
+    def test_arm_plugin_checkout_overrides_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in PRODUCTION:
+                (root / name).mkdir()
+            (root / ".claude-plugin/plugin.json").write_text(
+                '{"name": "pruner-output"}'
+            )
+            declared = root / "arms.json"
+            declared.write_text(
+                json.dumps(
+                    {
+                        "native": None,
+                        "jev": {"options": {}},
+                        "v3": {"options": {"model": "m"}, "plugin": str(root)},
+                    }
+                )
+            )
+            with patch.dict(os.environ, {"JEV_EVAL_ARMS": str(declared)}):
+                self.assertEqual(
+                    production_root(Path("/harness"), "jev"), Path("/harness")
+                )
+                self.assertEqual(
+                    production_root(Path("/harness"), "v3"), root.resolve()
+                )
+                self.assertEqual(plugin_name(root), "pruner-output")
+                self.assertEqual(
+                    set(plugin_roots(Path("/harness"))),
+                    {"/harness", str(root.resolve())},
+                )
 
     def test_rejects_relative_and_dirty_checkouts(self) -> None:
         with patch.dict(os.environ, {"JEV_EVAL_PLUGIN_DIR": "relative"}):
@@ -83,3 +119,17 @@ class SourceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SharedEnvTests(unittest.TestCase):
+    def test_bash_cap_applies_to_every_arm_and_is_bounded(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(shared_env(), {})
+        with patch.dict(os.environ, {"JEV_EVAL_BASH_MAX_OUTPUT_LENGTH": "150000"}):
+            self.assertEqual(shared_env(), {"BASH_MAX_OUTPUT_LENGTH": "150000"})
+        for value in ("0", "150001", "30k"):
+            with (
+                patch.dict(os.environ, {"JEV_EVAL_BASH_MAX_OUTPUT_LENGTH": value}),
+                self.assertRaises(ValueError),
+            ):
+                shared_env()

@@ -51,8 +51,11 @@ Claude requests a Bash command → Command runs → Jev prunes stdout → Claude
    result (including warnings, test totals, and artifact paths), or its complete text was not
    scored against every history segment (for example, a single chunk that cannot
    fit beside a segment). No partially shown chunk can be discarded.
-7. Each dropped run becomes a marker such as:
-   `[fast-jev-output trimmed N lines (M chars); full output: .claude/fast-jev-output/bash-<id>.txt (Read or grep it if needed)]`
+7. Each dropped run becomes `[N lines omitted]`.
+   Adjacent omissions across chunk boundaries share one marker. The Claude hook
+   labels retained lines as verbatim and puts the archive path in a single footer;
+   all metadata counts toward the native preview budget. Library callers can
+   enable this rendering with `compactMarkers: true`.
 8. Before the first scoring request, the complete stdout and stderr are saved
    under the project's `.claude/fast-jev-output/` directory (self-gitignored).
    When Claude already persisted the complete output, that file is reused as the
@@ -68,6 +71,11 @@ Claude requests a Bash command → Command runs → Jev prunes stdout → Claude
 9. Any archive write failure, Jev failure, or state that cannot fit leaves the original output untouched.
    Separate inline stderr is left unchanged. Host-persisted output is scored as
    the combined stream supplied by Claude.
+
+Explicit Bash commands containing a successfully pruned archive's path bypass
+further pruning in the same hook instance. Read and Grep are already unaffected.
+Recovery remains available; the plugin does not prevent the agent from checking
+an archive. Indirect reads through aliases or variables are not recognized.
 
 The hook reads the current transcript for each command; it does not maintain a
 separate history store. Claude Code's `session.messages()` returns the main
@@ -171,6 +179,10 @@ Choose one transport for the shell session that launches Codex:
   capability. The wrapper never reads an OpenRouter API key. Set
   `JEV_PRUNER_CODEX_ROUTER_BASE_URL` only when your router is not running at
   `http://127.0.0.1:4202`.
+
+Router URLs must use a literal loopback address, `127.0.0.1` or `[::1]`.
+Hostnames, user information, query strings and fragments are refused before
+the caller capability is read. Requests refuse redirects.
 
 Codex Router mode requires an installed router version that exposes
 `/v1/decisions`, an enabled OpenRouter provider, and the hidden
@@ -484,9 +496,22 @@ diagnostics, results, uncertain or task-required content, and output that could
 not be fully scored take precedence over this budget. If safe refinement cannot
 fit, the original result passes through; failed refinement never falls back to
 keeping only error-shaped lines.
-Scoring uses complete chunks and allows one initial Jev request plus at most 40
-additional requests, shared by scoring, retries, and refinement. Library callers
-can change that allowance with `maxScoringRequests`, including zero.
+Before scoring, a lower bound counts protected diagnostics/results, their adjacent
+context, boundary lines, and fixed compact metadata. If these cannot fit, no Jev
+request is made. Refinement also stops once lines already retained make a fit
+impossible.
+
+The Claude hook allows at most 12 total Jev requests by default, further limited
+to `ceil(visibleChars / 192)` (minimum one). `visibleChars` is the smaller of the
+native preview size and the configured output cap; without a native preview it
+uses the source size capped by the configured output budget. For a 2,146-character
+preview this allows twelve requests. This is an effort heuristic, not a pricing or
+savings guarantee.
+
+`maxScoringRequests` limits additional calls beyond the first, shared by initial
+scoring, retries, and refinement; zero permits one call. The hook default is 11.
+Direct library callers retain the default of 40 additional requests and can
+override it explicitly. Incomplete scoring always preserves the unscored content.
 Requests take one output batch from every history segment before moving to the
 next batch, so a limited allowance can still finish scoring some chunks.
 
@@ -510,23 +535,19 @@ Use `/plugin configure fast-jev-output` inside Claude Code, or merge a
 
 | Option | Default | Description |
 | --- | ---: | --- |
-| `apiKey` | `TYPESAFE_API_KEY` | Provider API key. With the default endpoint, the hook reads `TYPESAFE_API_KEY` when this option is unset |
-| `baseUrl` | TypeSafe System One | Advanced override for a compatible Jev Decisions endpoint. Configure its model and API key together |
+| `apiKey` | `TYPESAFE_API_KEY` | TypeSafe API key |
 | `minTokens` | `10000` | Estimated stdout token threshold; minimum 10,000; equality skips pruning |
 | `persistedOutputs` | `true` | Prune eligible output saved by Claude |
 | `persistedMaxChars` | `8000` | Rendered budget for saved output, including markers and the footer; 0 disables this configured cap. The native preview size, when available, remains an upper bound |
+| `maxScoringRequests` | `11` | Additional Jev calls beyond the first; shared across scoring, retries and refinement. Also bounded by visible preview size. 0 permits one call |
 | `chunkLines` | `20` | Lines grouped into each Jev decision chunk |
 | `chunkChars` | `0` | Optional character target instead of line grouping; 0 uses `chunkLines` |
 | `diagnostics` | `false` | Log decision reasons, source/hook sizes, native model-visible size before pruning when available, request count and elapsed time; no commands or output text |
 | `keepThreshold` | `0.5` | Minimum Jev probability for a chunk to remain; the uncertainty safeguard also retains scores above `0.1` |
 | `maxStateTokens` | `25000` | Estimated token budget for the Jev state |
-| `model` | `jev-latest` | Jev model identifier for the configured endpoint |
+| `model` | `jev-latest` | TypeSafe Jev model name |
 
 The old `minChars` option is no longer used; replace it with `minTokens`.
-
-`baseUrl` is intended for compatible Decisions transports, such as OpenRouter's
-Jev endpoint. It does not make a normal chat endpoint compatible, and it does
-not provide a Codex Router Decisions route where that route is unavailable.
 
 Diagnostics distinguish the complete source from the host's preview and the
 native text the model would have seen. The post-pruning model-visible size must

@@ -59,4 +59,64 @@ describe('Codex Router Jev asker', () => {
     expect(readSecret).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it.each([
+    'http://localhost:4202',
+    'http://router.example.test:4202',
+    'http://127.0.0.1.example.test:4202',
+    'http://caller@127.0.0.1:4202',
+    'http://127.0.0.1:4202?capability=caller',
+    'http://127.0.0.1:4202#caller',
+    'file:///127.0.0.1',
+    'invalid URL',
+  ])('refuses unsafe capability destination %s before reading the secret', async baseUrl => {
+    const readSecret = vi.fn(async () => 'caller');
+    const fetch = vi.fn(async () => new Response('{"answers":{}}', { status: 200 }));
+    const asker = createCodexRouterAsker({ baseUrl, readSecret, fetch });
+    await expect(asker.ask('state', {})).rejects.toThrow('loopback');
+    expect(readSecret).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['http://127.0.0.1:4202', 'http://[::1]:4202'])('accepts literal loopback destination %s', async baseUrl => {
+    const fetch = vi.fn(async () => new Response('{"answers":{}}', { status: 200 }));
+    const asker = createCodexRouterAsker({ baseUrl, readSecret: async () => 'caller', fetch });
+    await expect(asker.ask('state', {})).resolves.toMatchObject({ answers: {} });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it('refuses an empty capability before making a request', async () => {
+    const fetch = vi.fn();
+    const asker = createCodexRouterAsker({ readSecret: async () => '  ', fetch });
+    await expect(asker.ask('state', {})).rejects.toThrow('empty');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('passes cancellation that happened before the request to fetch', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      init?.signal?.throwIfAborted();
+      return new Response('{"answers":{}}', { status: 200 });
+    });
+    const asker = createCodexRouterAsker({ readSecret: async () => 'caller', fetch, signal: controller.signal });
+    await expect(asker.ask('state', {})).rejects.toThrow();
+    expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
+  });
+
+  it('aborts a request when its timeout expires', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetch = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('timed out')), { once: true });
+      }));
+      const asker = createCodexRouterAsker({ readSecret: async () => 'caller', fetch, timeoutMs: 100 });
+      const rejected = expect(asker.ask('state', {})).rejects.toThrow('timed out');
+      await vi.advanceTimersByTimeAsync(100);
+      await rejected;
+      expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

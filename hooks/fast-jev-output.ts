@@ -6,7 +6,7 @@ import type {
 } from 'claude-code';
 
 import { DEFAULT_MODEL, buildJevRequest, estimateTokens, parseJevResponse } from '../src/jev.js';
-import { classifyOutput, exceedsOutputThreshold, looksBinary, MIN_OUTPUT_TOKENS, trimOutput } from '../src/output.js';
+import { classifyOutput, exceedsOutputThreshold, looksBinary, MIN_OUTPUT_TOKENS, recoveryFooter, trimOutput } from '../src/output.js';
 import type { TrimOutputResult } from '../src/output.js';
 import type { JevAsker } from '../src/jev.js';
 import { looksSecret } from '../src/secrets.js';
@@ -16,6 +16,8 @@ import type { InformationCategory } from '../src/retention.js';
 export { looksSecret } from '../src/secrets.js';
 
 const ARCHIVE_DIR = '.claude/fast-jev-output';
+const DEFAULT_MAX_SCORING_REQUESTS = 11;
+const VISIBLE_CHARS_PER_REQUEST = 192;
 const DEFAULTS = {
   persistedMaxChars: 8_000,
   chunkLines: 20,
@@ -50,6 +52,7 @@ export type HookConfig = {
   chunkLines: number;
   keepThreshold: number;
   maxStateTokens: number;
+  maxScoringRequests?: number;
   minTokens: number;
   persistedOutputs: boolean;
   persistedMaxChars: number;
@@ -80,17 +83,31 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
   const apiKey = optionString(options, 'apiKey');
   if (apiKey) config.apiKey = apiKey;
   const baseUrl = optionString(options, 'baseUrl');
-  if (baseUrl) config.baseUrl = baseUrl;
+  if (baseUrl && /^https?:\/\//.test(baseUrl)) config.baseUrl = baseUrl;
   const chunkChars = optionNumber(options, 'chunkChars', 0);
   if (chunkChars > 0) config.chunkChars = chunkChars;
   if (options.diagnostics === true) config.diagnostics = true;
+  if (options.maxScoringRequests !== undefined) {
+    config.maxScoringRequests = Math.max(0, Math.floor(
+      optionNumber(options, 'maxScoringRequests', DEFAULT_MAX_SCORING_REQUESTS),
+    ));
+  }
   return config;
 }
 
-export function jevAsker(fetchFn: HookFetch, apiKey: string, model: string, baseUrl?: string): JevAsker {
+export function jevAsker(
+  fetchFn: HookFetch,
+  apiKey: string,
+  model: string,
+  baseUrl?: string,
+): JevAsker {
   return {
     async ask(state, questions) {
-      const request = buildJevRequest({ apiKey, model, baseUrl }, state, questions);
+      const request = buildJevRequest(
+        baseUrl ? { apiKey, model, baseUrl } : { apiKey, model },
+        state,
+        questions,
+      );
       const response = await fetchFn(request.url, {
         method: request.method,
         headers: request.headers,
@@ -140,6 +157,7 @@ export async function getApiKey(
 
 export const register: Register = (on: On, options: PluginOptions) => {
   const configured = resolveHookConfig(options);
+  const archives = new Set<string>();
 
   on('tool.call', { tool: 'Bash' }, async ($, event, next) => {
     const answer = await next(event);
@@ -150,6 +168,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     let sourceChars: number | null = null;
     let sourceEstimatedTokens: number | null = null;
     let modelVisibleBudgetChars: number | null = null;
+    let requestLimit: number | null = null;
     let pruning: TrimOutputResult | undefined;
     let informationCategory: InformationCategory | null = null;
     const original = answer.deny === undefined && !answer.isError ? answer.result : undefined;
@@ -157,6 +176,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
     let hookStdoutCharsAfter = hookStdoutCharsBefore;
     try {
       if (answer.deny !== undefined || answer.isError || !answer.result) return answer;
+      decision = 'archive_recovery';
+      if ([...archives].some(path => event.command.includes(path))) return answer;
       const record = answer.result;
       const persisted = record.persistedOutputPath;
       decision = 'persisted_disabled';
@@ -184,9 +205,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       const path = secret
         ? undefined
         : persisted ?? `${ARCHIVE_DIR}/bash-${event.tool_use_id ?? Date.now()}.txt`;
-      const footer = path
-        ? `\n\n[fast-jev-output full output: ${path} (Read or grep it if needed)]`
-        : '';
+      const footer = recoveryFooter(path);
       const maxChars = persisted
         ? Math.min(
           Math.max(0, configured.persistedMaxChars) || Infinity,
@@ -194,6 +213,11 @@ export const register: Register = (on: On, options: PluginOptions) => {
         )
         : Infinity;
       if (Number.isFinite(maxChars)) modelVisibleBudgetChars = maxChars;
+      const visibleChars = Math.min(maxChars, answer.text?.length ?? combined.length);
+      requestLimit = Math.min(
+        1 + (configured.maxScoringRequests ?? DEFAULT_MAX_SCORING_REQUESTS),
+        Math.max(1, Math.ceil(visibleChars / VISIBLE_CHARS_PER_REQUEST)),
+      );
       decision = 'footer_exceeds_budget';
       if (maxChars <= footer.length) return answer;
       let archived: Promise<void> | undefined;
@@ -227,18 +251,21 @@ export const register: Register = (on: On, options: PluginOptions) => {
         ),
         {
           minTokens: configured.minTokens,
-          maxChars: Number.isFinite(maxChars) ? maxChars - footer.length : 0,
+          maxChars: Number.isFinite(maxChars) ? maxChars : 0,
+          compactMarkers: true,
           chunkLines: configured.chunkLines,
           chunkChars: configured.chunkChars,
           keepThreshold: configured.keepThreshold,
           maxStateTokens: configured.maxStateTokens,
+          maxScoringRequests: requestLimit - 1,
           onDecision: reason => { decision = reason; },
         },
       );
       pruning = trimmed;
       if (!trimmed.trimmed) return answer;
       stage = 'publish';
-      const stdout = trimmed.output + footer;
+      const stdout = trimmed.output;
+      if (path) archives.add(path);
       const scores = trimmed.scores.map((score) => score.toFixed(2)).join(',');
       $.ui.log(
         `bash output: kept ${trimmed.kept}/${trimmed.chunks} chunks (${trimmed.charsBefore}→${stdout.length} chars) scores=${scores}`,
@@ -272,7 +299,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
               ? 0 : original?.stderr.length ?? null,
             chunks: pruning?.chunks ?? 0, kept: pruning?.kept ?? 0, dropped: pruning?.dropped ?? 0,
             withinChunkOnly: Boolean(pruning?.trimmed && pruning.dropped === 0),
-            requests, elapsedMs: Date.now() - started,
+            requests, requestLimit, elapsedMs: Date.now() - started,
           })}`);
         } catch {
           // Diagnostics cannot change the tool result.

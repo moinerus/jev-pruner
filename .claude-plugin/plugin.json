@@ -6,15 +6,9 @@
   "userConfig": {
     "apiKey": {
       "type": "string",
-      "title": "Jev provider API key",
-      "description": "Provider API key. Leave unset to use TYPESAFE_API_KEY with the default TypeSafe endpoint.",
+      "title": "TypeSafe API key",
+      "description": "TypeSafe API key. Leave unset to use TYPESAFE_API_KEY.",
       "sensitive": true
-    },
-    "baseUrl": {
-      "type": "string",
-      "title": "Jev Decisions endpoint",
-      "description": "Advanced: override the TypeSafe System One endpoint with a compatible Decisions endpoint.",
-      "sensitive": false
     },
     "minTokens": {
       "type": "number",
@@ -64,11 +58,23 @@
       "description": "Estimated token budget for the Bash output state sent to Jev.",
       "default": 25000
     },
+    "maxScoringRequests": {
+      "type": "number",
+      "title": "Maximum additional scoring requests",
+      "description": "Additional Jev calls beyond the first, shared by scoring, retries and refinement. The hook also limits total calls to one per 192 visible preview characters, rounded up. 0 permits only the initial call.",
+      "default": 11
+    },
     "model": {
       "type": "string",
       "title": "Jev model",
-      "description": "Jev model identifier for the configured endpoint.",
+      "description": "TypeSafe Jev model name.",
       "default": "jev-latest"
+    },
+    "baseUrl": {
+      "type": "string",
+      "title": "Scorer URL",
+      "description": "HTTP(S) endpoint that accepts the Jev request body and returns Jev-shaped answers. Leave unset for TypeSafe Jev; set to point the hook at an independent scorer serving the same protocol.",
+      "default": ""
     }
   }
 }

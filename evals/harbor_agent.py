@@ -18,7 +18,15 @@ from evals.auth import (
     prepare_subscription,
     subscription_mounts,
 )
-from evals.sources import PRODUCTION, plugin_options, production_root
+from evals.sources import (
+    PRODUCTION,
+    arm_env,
+    arm_options,
+    arms,
+    plugin_name,
+    production_root,
+    shared_env,
+)
 
 CLAUDE_VERSION = "2.1.274"
 REPO = Path(__file__).resolve().parents[1]
@@ -27,8 +35,8 @@ REMOTE = "/opt/jev-eval"
 
 def arm() -> str:
     value = os.environ["JEV_EVAL_ARM"]
-    if value not in {"control", "plugin"}:
-        raise ValueError("JEV_EVAL_ARM must be control or plugin")
+    if value not in arms():
+        raise ValueError(f"JEV_EVAL_ARM must be one of {sorted(arms())}")
     return value
 
 
@@ -57,10 +65,12 @@ class JevClaudeCode(ClaudeCode):
         )
         if self.parse_version(version.stdout or "") != CLAUDE_VERSION:
             raise RuntimeError("Installed Claude version does not match pin")
-        for directory in PRODUCTION:
-            await environment.upload_dir(
-                production_root(REPO) / directory, f"{REMOTE}/production/{directory}"
-            )
+        if arm_options(arm()) is not None:
+            for directory in PRODUCTION:
+                await environment.upload_dir(
+                    production_root(REPO, arm()) / directory,
+                    f"{REMOTE}/production/{directory}",
+                )
         await environment.upload_dir(REPO / "evals/observer", f"{REMOTE}/observer")
         await environment.upload_file(
             REPO / "evals/check_auth.cjs", f"{REMOTE}/check_auth.cjs"
@@ -159,12 +169,15 @@ class JevClaudeCode(ClaudeCode):
         settings: dict = {"enabledPlugins": {"plugin-authoring@builtin": False}}
         if auth_mode() == "subscription":
             settings["forceLoginMethod"] = "claudeai"
-        if arm() == "plugin" and plugin_options():
+        options = arm_options(arm())
+        if options:
             settings["pluginConfigs"] = {
-                "fast-jev-output@inline": {"options": plugin_options()}
+                f"{plugin_name(production_root(REPO, arm()))}@inline": {
+                    "options": options
+                }
             }
         flags += f" --settings {shlex.quote(json.dumps(settings))}"
-        if arm() == "plugin":
+        if options is not None:
             flags += f" --plugin-dir {REMOTE}/production"
         return flags
 
@@ -172,6 +185,8 @@ class JevClaudeCode(ClaudeCode):
         env = {} if auth_mode() == "subscription" else super()._resolve_auth_env()
         env["CLAUDE_CODE_ENABLE_FUNCTION_HOOKS"] = "1"
         env["TYPESAFE_API_KEY"] = os.environ["TYPESAFE_API_KEY"]
+        env.update(shared_env())
+        env.update(arm_env(arm()))
         return env
 
     def _resolved_model_name(self) -> str | None:
@@ -239,8 +254,8 @@ class JevClaudeCode(ClaudeCode):
             if isinstance(event, dict) and event.get("subtype") == "init":
                 loaded_plugins = {plugin["name"] for plugin in event.get("plugins", [])}
         expected_plugins = {"jev-eval-observer"}
-        if arm() == "plugin":
-            expected_plugins.add("fast-jev-output")
+        if arm_options(arm()) is not None:
+            expected_plugins.add(plugin_name(production_root(REPO, arm())))
         if loaded_plugins != expected_plugins:
             raise RuntimeError(f"Unexpected loaded plugins: {loaded_plugins}")
         if not events:

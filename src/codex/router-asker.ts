@@ -25,7 +25,7 @@ function loopbackBaseUrl(value: string): string {
   const hostname = url.hostname.toLowerCase();
   if (
     !['http:', 'https:'].includes(url.protocol) ||
-    !['127.0.0.1', 'localhost', '[::1]', '::1'].includes(hostname) ||
+    !['127.0.0.1', '[::1]'].includes(hostname) ||
     url.username || url.password || url.search || url.hash
   ) {
     throw new Error('Codex Router URL must be a loopback HTTP URL');

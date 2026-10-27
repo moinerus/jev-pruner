@@ -50,15 +50,51 @@ function harness(options: Partial<HookConfig> = {}) {
   const next = vi.fn(async () => original);
   return {
     bodies, messages, readMessages, read, fetch, write, original, next, log: host.ui.log,
-    run: () => hook(
+    run: (command = 'build') => hook(
       host as unknown as Parameters<BashHook>[0],
-      { tool: 'Bash', command: 'build', tool_use_id: 'bash-test' },
+      { tool: 'Bash', command, tool_use_id: 'bash-test' },
       next as unknown as Parameters<BashHook>[2],
     ),
 };
 }
 
 describe('Bash pruning diagnostics', () => {
+  it.each([
+    [2048, 11],
+    [2146, 12],
+    [8000, 12],
+  ])('bounds scoring using a %i-character preview instead of archive size', async (size, limit) => {
+    const h = harness({ diagnostics: true });
+    h.original.result.persistedOutputPath = '/project/full.txt';
+    h.read.mockResolvedValue(h.original.result.stdout);
+    h.original.result.stdout = 'preview';
+    h.original.text = 'p'.repeat(size);
+    await h.run();
+    expect(h.fetch.mock.calls.length).toBeGreaterThan(0);
+    expect(h.fetch.mock.calls.length).toBeLessThanOrEqual(limit);
+    expect(h.log).toHaveBeenCalledWith(expect.stringContaining(`"requestLimit":${limit}`));
+  });
+
+  it('shares a configured one-call allowance with token-limit retries', async () => {
+    const h = harness({ diagnostics: true, maxScoringRequests: 0 });
+    h.fetch.mockResolvedValue({ status: 400, ok: false, text: 'max_tokens_exceeded' });
+    expect(await h.run()).toBe(h.original);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    expect(h.log).toHaveBeenCalledWith(expect.stringContaining('"requestLimit":1'));
+  });
+
+  it('preserves an unscored tail when its preview only permits one request', async () => {
+    const h = harness({ diagnostics: true });
+    const full = 'start\n' + Array.from({ length: 4000 }, (_, i) =>
+      `progress ${i} ${'cached '.repeat(30)}`).join('\n') + '\nserial=important-tail';
+    h.original.result.persistedOutputPath = '/project/full.txt';
+    h.original.text = 'p'.repeat(192);
+    h.read.mockResolvedValue(full);
+    expect(await h.run()).toBe(h.original);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    expect(h.log).toHaveBeenCalledWith(expect.stringContaining('"requestLimit":1'));
+  });
+
   it.each([0, 8_000])('caps persisted replacements at the native visible size with budget %i', async persistedMaxChars => {
     const h = harness({ diagnostics: true, chunkChars: 4_000, persistedMaxChars });
     const complete = `${h.original.result.stdout}\nERROR: deployment blocked`;
@@ -197,6 +233,17 @@ describe('Bash hook conversation state', () => {
 });
 
 describe('Bash output archives', () => {
+  it('does not prune a large explicit recovery read again', async () => {
+    const h = harness({ diagnostics: true });
+    expect((await h.run()).result?.stdout).toContain('fast-jev-output trimmed');
+    const requests = h.fetch.mock.calls.length;
+    expect(await h.run('sed -n "1,2000p" .claude/fast-jev-output/bash-bash-test.txt')).toBe(h.original);
+    expect(h.fetch).toHaveBeenCalledTimes(requests);
+    expect(h.log.mock.calls.at(-1)![0]).toContain('"decision":"archive_recovery"');
+    await h.run('build');
+    expect(h.fetch.mock.calls.length).toBeGreaterThan(requests);
+  });
+
   it('counts the archive footer in the saved-output budget', async () => {
     const h = harness({ persistedMaxChars: 8_000 });
     const complete = h.original.result.stdout;

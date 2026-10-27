@@ -16,19 +16,26 @@ import tomllib
 
 from evals.auth import AUTH_OVERRIDES, subscription_mounts
 from evals.sources import (
+    DEFAULT_ARMS,
     PRODUCTION,
+    arm_options,
+    arms,
+    control_arm,
+    plugin_name,
     plugin_options,
+    plugin_roots,
     production_provenance,
-    production_root,
+    shared_env,
 )
 from evals.summarize import read_events, summarize_trial
 
 REPO = Path(__file__).resolve().parents[1]
 REGISTRY = "https://raw.githubusercontent.com/laude-institute/harbor/b83e7686999a18ba90a8603794d7d18d42cab010/registry.json"
 MODEL = "anthropic/claude-sonnet-5"
+DATASET = "terminal-bench@2.0"
 FLAGS = [
     "-d",
-    "terminal-bench@2.0",
+    DATASET,
     "--registry-url",
     REGISTRY,
     "-a",
@@ -71,20 +78,54 @@ def save(path: Path, value: object) -> None:
 
 def source_hashes() -> dict[str, str]:
     hashes = {}
-    for root, directories in (
-        (REPO, ("evals",)),
-        (production_root(REPO), PRODUCTION),
-    ):
+    sources: list[tuple[Path, tuple[str, ...], str]] = [(REPO, ("evals",), "")]
+    for root in plugin_roots(REPO).values():
+        prefix = "" if root == REPO.resolve() else f"plugin/{plugin_name(root)}/"
+        sources.append((root, PRODUCTION, prefix))
+    for root, directories, prefix in sources:
         names = subprocess.check_output(
             ["git", "ls-files", *directories], cwd=root, text=True
         ).splitlines()
         hashes.update(
             {
-                name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+                prefix + name: hashlib.sha256((root / name).read_bytes()).hexdigest()
                 for name in names
             }
         )
     return hashes
+
+
+ACCOUNT_MARKERS = (
+    "rate_limit",
+    "rate limit",
+    "usage limit",
+    "hit your limit",
+    "authentication_error",
+    "invalid_api_key",
+    "not logged in",
+    "oauth token",
+    "oauth session",
+    "failed to authenticate",
+    "subscription limit",
+    "insufficient_quota",
+    "credit balance is too low",
+    "claude subscription status unavailable",
+    "expected official claude subscription login",
+    '"status": 429',
+    '"status": 401',
+)
+
+
+def account_failure(exception: dict | None) -> bool:
+    """Rate-limit or authentication failures say nothing about the task or arm."""
+    exception = exception or {}
+    if not exception:
+        return False
+    kind = str(exception.get("exception_type", ""))
+    if kind in {"ApiRateLimitError", "AuthenticationError"}:
+        return True
+    message = str(exception.get("exception_message", "")).lower()
+    return any(marker in message for marker in ACCOUNT_MARKERS)
 
 
 def access_blocker(events: list[dict]) -> str | None:
@@ -100,24 +141,7 @@ def access_blocker(events: list[dict]) -> str | None:
         if not (event.get("is_error") or error or event.get("type") == "error"):
             continue
         text = json.dumps(event).lower()
-        if any(
-            marker in text
-            for marker in (
-                "rate_limit",
-                "rate limit",
-                "usage limit",
-                "hit your limit",
-                "authentication_error",
-                "invalid_api_key",
-                "not logged in",
-                "oauth token",
-                "subscription limit",
-                "insufficient_quota",
-                "credit balance is too low",
-                '"status": 429',
-                '"status": 401',
-            )
-        ):
+        if any(marker in text for marker in ACCOUNT_MARKERS):
             return "Claude authentication or account limit error; inspect saved stream"
         if "model" in text and any(
             marker in text
@@ -152,6 +176,49 @@ def trial_blocker(job: Path) -> str | None:
     return None
 
 
+def setup_timeout(exception: dict | None) -> bool:
+    """A container that never reached the agent measures the sandbox, not the arm."""
+    message = str((exception or {}).get("exception_message", "")).lower()
+    return message.startswith("agent setup timed out")
+
+
+def setup_signature(exception: dict | None) -> tuple[str, str] | None:
+    exception = exception or {}
+    if not exception.get("exception_type"):
+        return None
+    message = str(exception.get("exception_message", "")).splitlines()
+    return exception["exception_type"], message[0] if message else ""
+
+
+def repeated_task_failure(rows: list[dict], row: dict, job: Path) -> bool:
+    """True when another arm of the same task already failed setup the same way.
+
+    A setup failure that reproduces across arms is a property of the task's
+    environment, not of the arm under test, so it is recorded and the cohort
+    continues instead of pausing once per arm.
+    """
+    signatures = set()
+    for result in job.glob("*/result.json"):
+        try:
+            signature = setup_signature(
+                json.loads(result.read_text()).get("exception_info")
+            )
+        except json.JSONDecodeError:
+            continue
+        if signature:
+            signatures.add(signature)
+    if not signatures:
+        return False
+    return any(
+        other is not row
+        and other["task"] == row["task"]
+        and other.get("state") == "finished"
+        and other.get("failure_category") in {"agent_setup", "infrastructure"}
+        and setup_signature(other.get("exception")) in signatures
+        for other in rows
+    )
+
+
 def failure_category(row: dict) -> str | None:
     exception = row.get("exception") or {}
     kind = exception.get("exception_type", "")
@@ -159,6 +226,8 @@ def failure_category(row: dict) -> str | None:
         return "infrastructure"
     if "Verifier" in kind or "Reward" in kind:
         return "verifier"
+    if account_failure(exception):
+        return "account"
     if "Setup" in kind or (
         exception
         and (row.get("agent_setup") or {}).get("started_at")
@@ -175,8 +244,10 @@ def failure_category(row: dict) -> str | None:
 
 
 def aggregate(rows: list[dict]) -> dict:
-    arms = {}
-    for arm in ("control", "plugin"):
+    summary = {}
+    names = arm_names()
+    control_name = control_arm()
+    for arm in names:
         group = [row for row in rows if row["arm"] == arm]
         finished = [row for row in group if row["state"] == "finished"]
         measured = [
@@ -188,7 +259,7 @@ def aggregate(rows: list[dict]) -> dict:
                 for key, value in (usage or {}).items():
                     if isinstance(value, (int, float)) and not isinstance(value, bool):
                         jev_usage[key] = jev_usage.get(key, 0) + value
-        arms[arm] = {
+        summary[arm] = {
             "planned": len(group),
             "finished": len(finished),
             "resource_blocked": sum(
@@ -239,28 +310,39 @@ def aggregate(rows: list[dict]) -> dict:
             for row in rows
             if row["task"] == task and row.get("repetition", 1) == repetition
         }
-        control, plugin = by_arm["control"], by_arm["plugin"]
-        complete = all(row.get("reward") is not None for row in (control, plugin))
-        pairs.append(
-            {
-                "task": task,
-                "repetition": repetition,
-                "both_rewards_available": complete,
-                "control_state": control["state"],
-                "plugin_state": plugin["state"],
-                "control_reward": control.get("reward"),
-                "plugin_reward": plugin.get("reward"),
-                "disagreement": control.get("reward") != plugin.get("reward")
-                if complete
-                else None,
-            }
-        )
+        control = by_arm[control_name]
+        for name in names:
+            if name == control_name:
+                continue
+            plugin = by_arm[name]
+            complete = all(row.get("reward") is not None for row in (control, plugin))
+            pairs.append(
+                {
+                    "task": task,
+                    "repetition": repetition,
+                    **({"arm": name} if len(names) > 2 else {}),
+                    "both_rewards_available": complete,
+                    "control_state": control["state"],
+                    "plugin_state": plugin["state"],
+                    "control_reward": control.get("reward"),
+                    "plugin_reward": plugin.get("reward"),
+                    "disagreement": control.get("reward") != plugin.get("reward")
+                    if complete
+                    else None,
+                }
+            )
     return {
         "trials": rows,
         "pairs": pairs,
-        "aggregate": arms,
+        "aggregate": summary,
+        "arms": {name: arm_options(name) for name in names},
+        "control_arm": control_name,
         "expected_trials": len(rows),
     }
+
+
+def arm_names() -> list[str]:
+    return list(arms())
 
 
 def checkpoint(root: Path, rows: list[dict]) -> None:
@@ -302,7 +384,7 @@ def finish_trial(root: Path, row: dict, environment: str) -> str | None:
     reason = trial_blocker(job)
     paths = list(job.glob("*/result.json"))
     if len(paths) == 1:
-        row.update(summarize_trial(paths[0]))
+        row.update(summarize_trial(paths[0], row["arm"]))
         row["failure_category"] = failure_category(row)
         row["state"] = "finished"
     else:
@@ -310,7 +392,7 @@ def finish_trial(root: Path, row: dict, environment: str) -> str | None:
         row["failure_category"] = "infrastructure"
         row["error"] = f"Expected one trial result, found {len(paths)}"
         reason = reason or row["error"]
-    if environment == "docker":
+    if environment == "docker" and row.get("requested_docker_image"):
         inspected = subprocess.run(
             [
                 "docker",
@@ -326,10 +408,7 @@ def finish_trial(root: Path, row: dict, environment: str) -> str | None:
         )
         if inspected.returncode == 0:
             row["image_repo_digests"] = json.loads(inspected.stdout)
-    if row.get("task_revision") not in {
-        None,
-        "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
-    }:
+    if row.get("task_revision") not in {None, row.get("git_commit_id")}:
         reason = "Unexpected benchmark revision in trial result"
     issues = row.get("measurement_issues") or []
     if row.get("model") and any(
@@ -359,9 +438,15 @@ def continuation_rows(
     previous = json.loads((root / "execution-provenance.json").read_text())
     if previous.get("plugin_options", {}) != plugin_options():
         raise ValueError("Cannot resume with different plugin options")
+    if previous.get("shared_env", {}) != shared_env():
+        raise ValueError("Cannot resume with a different shared container environment")
+    if previous.get("arms", DEFAULT_ARMS) != {
+        name: arm_options(name) for name in arm_names()
+    }:
+        raise ValueError("Cannot resume with different arms")
     if previous["flags"] != flags:
         raise ValueError("Cannot resume with different trial flags")
-    production = (".claude-plugin/", "hooks/", "src/")
+    production = (".claude-plugin/", "hooks/", "src/", "plugin/")
     if {
         key: value
         for key, value in previous["source_sha256"].items()
@@ -374,7 +459,7 @@ def continuation_rows(
         for row, item in zip(rows, manifest, strict=True)
     ):
         raise ValueError("Checkpoint does not match the declared manifest")
-    for row in rows:
+    for index, (row, item) in enumerate(zip(rows, manifest, strict=True)):
         if row["state"] == "running" and row["job_name"] in (inflight or set()):
             row.setdefault("execution_commit", previous["commit"])
             continue
@@ -388,11 +473,22 @@ def continuation_rows(
                 or len(paths) != 1
             ):
                 raise ValueError("Cannot resume an unfinished Harbor trial")
-            row.update(summarize_trial(paths[0]))
+            row.update(summarize_trial(paths[0], row["arm"]))
             row["failure_category"] = failure_category(row)
             row["harbor_return_code"] = None
             row["recovered_from_completed_harbor_job"] = True
             row["state"] = "finished"
+        elif row["state"] == "finished":
+            paths = list((root / "jobs" / row["job_name"]).glob("*/result.json"))
+            if len(paths) == 1:
+                row.update(summarize_trial(paths[0], row["arm"]))
+                row["failure_category"] = failure_category(row)
+                row["resummarized_with_sources"] = pin.get("evals/summarize.py")
+        if row["state"] == "finished" and (
+            row.get("failure_category") == "account"
+            or (setup_timeout(row.get("exception")) and not row.get("voided_attempts"))
+        ):
+            rows[index] = row = void_attempt(root, row, item)
         if row["state"] not in {
             "pending",
             "finished",
@@ -409,11 +505,34 @@ def continuation_rows(
     return rows
 
 
+def void_attempt(root: Path, row: dict, item: dict) -> dict:
+    """Requeue a trial that failed on the account rather than the task.
+
+    The Harbor job directory is kept under a `.voided-N` suffix so the evidence
+    survives, and the attempt is recorded on the fresh pending row.
+    """
+    job = root / "jobs" / row["job_name"]
+    attempts = list(row.get("voided_attempts", []))
+    voided = job.with_name(f"{job.name}.voided-{len(attempts) + 1}")
+    if job.exists():
+        job.rename(voided)
+    attempts.append(
+        {
+            "job_dir": voided.name,
+            "failure_category": row.get("failure_category"),
+            "exception": row.get("exception"),
+            "execution_commit": row.get("execution_commit"),
+        }
+    )
+    return {**item, "state": "pending", "voided_attempts": attempts}
+
+
 def validate_manifest(
     manifest: list[dict], task_count: int = 89, repetitions: int = 1
 ) -> None:
     tasks = {row["task"] for row in manifest}
-    count = task_count * repetitions * 2
+    names = arm_names()
+    count = task_count * repetitions * len(names)
     if (
         repetitions < 1
         or task_count < 1
@@ -424,11 +543,11 @@ def validate_manifest(
     if {(row["task"], row["arm"], row.get("repetition", 1)) for row in manifest} != {
         (task, arm, repetition)
         for task in tasks
-        for arm in ("control", "plugin")
+        for arm in names
         for repetition in range(1, repetitions + 1)
     }:
         raise ValueError(
-            "Each task repetition must have exactly one control and one plugin arm"
+            f"Each task repetition must have exactly one trial per arm {names}"
         )
     if len({row["job_name"] for row in manifest}) != len(manifest):
         raise ValueError("Each trial must have a unique job_name")
@@ -444,9 +563,11 @@ def run(
     inflight: dict[str, TrialProcess] | None = None,
     task_count: int = 89,
     repetitions: int = 1,
+    dataset: str = DATASET,
 ) -> None:
     if concurrency < 1:
         raise ValueError("Concurrency must be positive")
+    flags = [dataset if flag == DATASET else flag for flag in FLAGS]
     if inflight and not resume:
         raise ValueError("In-flight processes require resume")
     if os.environ.get("JEV_EVAL_AUTH_MODE") != "subscription":
@@ -480,7 +601,7 @@ def run(
     pin = source_hashes()
     rows = (
         continuation_rows(
-            root, manifest, FLAGS + environment_flags, pin, set(inflight or {})
+            root, manifest, flags + environment_flags, pin, set(inflight or {})
         )
         if resume
         else [
@@ -498,13 +619,16 @@ def run(
             ["git", "rev-parse", "HEAD"], cwd=REPO, text=True
         ).strip(),
         "source_sha256": pin,
-        "flags": FLAGS + environment_flags,
+        "flags": flags + environment_flags,
         "environment": environment,
         "modal_image_builder_version": (
             env["MODAL_IMAGE_BUILDER_VERSION"] if environment == "modal" else None
         ),
         "auth_mode": "subscription",
         "plugin_options": plugin_options(),
+        "shared_env": shared_env(),
+        "arms": {name: arm_options(name) for name in arm_names()},
+        "control_arm": control_arm(),
         "api_overrides_present_in_launcher": sorted(set(AUTH_OVERRIDES) & set(env)),
         "concurrency": concurrency,
         "task_count": task_count,
@@ -569,7 +693,11 @@ def run(
     while True:
         for index, process in list(active.items()):
             row = rows[index]
-            reason = trial_blocker(root / "jobs" / row["job_name"])
+            job = root / "jobs" / row["job_name"]
+            reason = trial_blocker(job)
+            if reason and repeated_task_failure(rows, row, job):
+                row["repeated_task_failure"] = reason
+                reason = None
             if reason:
                 pause(index, reason)
                 if process.poll() is None:
@@ -578,6 +706,9 @@ def run(
                 continue
             row["harbor_return_code"] = process.returncode
             final_reason = finish_trial(root, row, environment)
+            if final_reason and repeated_task_failure(rows, row, job):
+                row["repeated_task_failure"] = final_reason
+                final_reason = None
             reason = reason or final_reason
             checkpoint(root, rows)
             print(
@@ -602,11 +733,13 @@ def run(
             task_config = tomllib.loads(
                 (benchmark / row["task"] / "task.toml").read_text()
             )
-            row["requested_docker_image"] = task_config["environment"]["docker_image"]
+            row["requested_docker_image"] = task_config["environment"].get(
+                "docker_image"
+            )
             command = [
                 harbor,
                 "run",
-                *FLAGS,
+                *flags,
                 "-i",
                 row["task"],
                 "--job-name",
@@ -656,6 +789,7 @@ if __name__ == "__main__":
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--task-count", type=int, default=89)
     parser.add_argument("--repetitions", type=int, default=1)
+    parser.add_argument("--dataset", default=DATASET)
     args = parser.parse_args()
     run(
         args.evidence.resolve(),
@@ -666,4 +800,5 @@ if __name__ == "__main__":
         args.concurrency,
         task_count=args.task_count,
         repetitions=args.repetitions,
+        dataset=args.dataset,
     )
